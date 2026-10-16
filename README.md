@@ -11,7 +11,9 @@
 
 [English](README.md) • [Русский](README_RU.md)
 
+</div>
 
+---
 
 ## 📦 What's Inside
 
@@ -77,7 +79,8 @@ G-Blend/
 
 1. Copy the `gmod_exporter_addon` folder into your GMod addons directory:
    ```
-   ...\steamapps\common\GarrysMod\garrysmodddons\gmod_exporter_addon   ```
+   ...\steamapps\common\GarrysMod\garrysmod\addons\gmod_exporter_addon\
+   ```
 2. Launch or restart Garry's Mod
 3. The addon loads automatically — no extra steps needed
 
