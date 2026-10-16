@@ -151,7 +151,6 @@ G-Blend/
 
 ## 🙏 Благодарности
 
-- **Prosvet 3-2** — основная разработка
 - **SourceIO** — встроенная библиотека для парсинга MDL/BSP/VTF ([SourceIO на GitHub](https://github.com/REDxEYE/SourceIO))
 
 ---
@@ -159,5 +158,3 @@ G-Blend/
 ## 📄 Лицензия
 
 Проект распространяется под лицензией **MIT** — подробности в файле [LICENSE](LICENSE).
-
-SourceIO (встроена) распространяется под отдельной лицензией — смотри `gmod_scene_importer/SourceIO_adv/LICENSE`.
