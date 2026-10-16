@@ -11,17 +11,7 @@
 
 [English](README.md) • [Русский](README_RU.md)
 
-</div>
 
----
-
-## ⬇️ Downloads & Releases
-
-| Release | Asset | Size | Description | Link |
-|---|---|---|---|---|
-| **[v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0)** | `G-Blend_v1.0.zip` | 5.65 MB | Blender Addon (`gmod_scene_importer`) + SourceIO | [📦 **Download v1.0**](https://github.com/Sinon1337/G-blend/releases/download/v1.0/G-Blend_v1.0.zip) |
-
----
 
 ## 📦 What's Inside
 
