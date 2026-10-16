@@ -1,0 +1,2 @@
+class Mdl:
+    pass

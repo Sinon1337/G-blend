@@ -1,0 +1,159 @@
+from typing import Iterator, Optional, Any
+
+from gmod_scene_importer.SourceIO_adv.library.shared.app_id import SteamAppId
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.provider import ContentProvider, is_relative_to
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers import register_provider
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.vpk_provider import VPKContentProvider
+from gmod_scene_importer.SourceIO_adv.library.utils import Buffer, FileBuffer, TinyPath
+from gmod_scene_importer.SourceIO_adv.library.utils.s1_keyvalues import KVParser
+from gmod_scene_importer.SourceIO_adv.logger import SourceLogMan
+
+log_manager = SourceLogMan()
+logger = log_manager.get_logger('GameInfoProvider')
+
+
+class Source1GameInfoProvider(ContentProvider):
+    def __init__(self, filepath: TinyPath):
+        super().__init__(filepath)
+        with FileBuffer(filepath, "r") as f:
+            header, gameinfo_data = KVParser(filepath, f.read_ascii_string()).parse()
+        if header != "gameinfo":
+            raise ValueError("Invalid gameinfo header")
+        self.filesystem: dict[str, Any] = gameinfo_data["filesystem"]
+        self._steamapp_id = SteamAppId(int(self.filesystem.get("steamappid", 0)))
+        self.mount: list[ContentProvider] = []
+
+        self._exists_cache: dict[TinyPath, bool] = {}
+        self._owner_cache: dict[TinyPath, ContentProvider] = {}
+
+        mods_folder = self.root.parent
+        for search_path_type, search_paths in self.filesystem.get("searchpaths", {}).items():
+            if isinstance(search_paths, str):
+                search_paths = [search_paths]
+            if search_path_type.lower() not in ["game", "mod", "platform", "gamebin", "vpk"]:
+                logger.debug(
+                    f"Skipping mounting {search_paths!r} as is not one of supported mount types: {search_path_type}")
+                continue
+            for search_path in search_paths:
+                is_all_source_engine_paths = False
+                if "all_source_engine_paths" in search_path.lower():
+                    search_path = search_path.lower().replace("|all_source_engine_paths|", "")
+                    is_all_source_engine_paths = True
+                elif "gameinfo_path" in search_path.lower():
+                    search_path = TinyPath(search_path.replace("|gameinfo_path|", self.root.stem + "/"))
+                elif search_path.endswith("*"):
+                    logger.warn(f"Wildcard search path is not supported: {search_path}")
+                    continue
+                if search_path.endswith(".vpk"):
+                    tmp = TinyPath(search_path)
+                    if (mods_folder / tmp.with_name(tmp.stem + "_dir")).resolve().exists():
+                        search_path = tmp.with_name(tmp.stem + "_dir")
+                    else:
+                        search_path = TinyPath(search_path)
+                search_path = TinyPath(search_path)
+                if search_path.is_absolute():
+                    mod_folder = search_path
+                elif is_all_source_engine_paths:
+                    mod_folder = (mods_folder.parent / search_path).resolve()
+                else:
+                    mod_folder = (mods_folder / search_path).resolve()
+                if mod_folder.exists():
+                    if mod_folder.is_file():
+                        if mod_folder.suffix == ".vpk":
+                            mod_provider = register_provider(VPKContentProvider(mod_folder, self._steamapp_id))
+                            self._add_mount(mod_provider)
+                        else:
+                            logger.warn("Only VPK/HFS/GMA supported to be mounted as files")
+                            continue
+                    else:
+                        mod_provider = register_provider(LooseFilesContentProvider(mod_folder, self._steamapp_id))
+                        self._add_mount(mod_provider)
+                        for vpk in mod_folder.glob("*_dir.vpk"):
+                            vpk_provider = register_provider(VPKContentProvider(vpk, self._steamapp_id))
+                            self._add_mount(vpk_provider)
+
+    def _add_mount(self, mod_provider):
+        if mod_provider not in self.mount:
+            logger.info(f"Mounted: {mod_provider}")
+            self.mount.append(mod_provider)
+        self._exists_cache.clear()
+        self._owner_cache.clear()
+
+    def _note_hit(self, filepath: TinyPath, provider: ContentProvider) -> None:
+        """Record that a filepath exists and which provider owns it."""
+        self._exists_cache[filepath] = True
+        self._owner_cache[filepath] = provider
+
+    def _note_miss(self, filepath: TinyPath) -> None:
+        """Record that a filepath does not exist in any mounted provider."""
+        self._exists_cache[filepath] = False
+        if filepath in self._owner_cache:
+            self._owner_cache.pop(filepath, None)
+
+    @property
+    def name(self) -> str:
+        return self.filesystem.get("game", self.root.stem)
+
+    def check(self, filepath: TinyPath) -> bool:
+        """Return True if any mounted provider contains the path, with caching."""
+        cached = self._exists_cache.get(filepath)
+        if cached is not None:
+            return cached
+        owner = self._owner_cache.get(filepath)
+        if owner is not None and owner.check(filepath):
+            self._note_hit(filepath, owner)
+            return True
+        for mount in self.mount:
+            if mount.check(filepath):
+                self._note_hit(filepath, mount)
+                return True
+        self._note_miss(filepath)
+        return False
+
+    def get_relative_path(self, filepath: TinyPath):
+        if is_relative_to(filepath, self.root):
+            rel_path = filepath.relative_to(self.root)
+            if self.check(rel_path):
+                return rel_path
+        return None
+
+    def get_provider_from_path(self, filepath):
+        if self.check(filepath):
+            return self
+        return None
+
+    def get_steamid_from_asset(self, asset_path: TinyPath) -> SteamAppId | None:
+        if self.check(asset_path):
+            return self.steam_id
+        return None
+
+    def find_file(self, filepath: TinyPath) -> Optional[Buffer]:
+        """Return a Buffer for the file by querying the owning provider first if cached."""
+        owner = self._owner_cache.get(filepath)
+        if owner is not None:
+            buf = owner.find_file(filepath)
+            if buf is not None:
+                self._note_hit(filepath, owner)
+                return buf
+            self._owner_cache.pop(filepath, None)
+            self._exists_cache.pop(filepath, None)
+        for mount in self.mount:
+            buf = mount.find_file(filepath)
+            if buf is not None:
+                self._note_hit(filepath, mount)
+                return buf
+        self._note_miss(filepath)
+        return None
+
+    def glob(self, pattern: str) -> Iterator[tuple[TinyPath, Buffer]]:
+        for mount in self.mount:
+            yield from mount.glob(pattern)
+
+    @property
+    def steam_id(self) -> SteamAppId:
+        return self._steamapp_id
+
+    @property
+    def root(self) -> TinyPath:
+        return self.filepath.parent

@@ -1,0 +1,39 @@
+from gmod_scene_importer.SourceIO_adv.library.models.phy.phy import SolidHeader
+from gmod_scene_importer.SourceIO_adv.library.source1.bsp import Lump, ValveLumpInfo, lump_tag
+from gmod_scene_importer.SourceIO_adv.library.source1.bsp.bsp_file import VBSPFile
+from gmod_scene_importer.SourceIO_adv.library.utils import Buffer
+
+
+class SolidBlock:
+    def __init__(self):
+        self.solids = []
+        self.kv = ''
+
+    def parse(self, buffer: Buffer):
+        data_size, script_size, solid_count = buffer.read_fmt("3I")
+
+        for _ in range(solid_count):
+            solid = SolidHeader.from_buffer(buffer)
+            self.solids.append(solid)
+        self.kv = buffer.read_ascii_string(script_size)
+
+
+@lump_tag(29, 'LUMP_PHYSICS')
+class PhysicsLump(Lump):
+    def __init__(self, lump_info: ValveLumpInfo):
+        super().__init__(lump_info)
+        self.solid_blocks: dict[int, SolidBlock] = {}
+
+    def parse(self, buffer: Buffer, bsp: VBSPFile):
+        while buffer:
+            solid_block_id = buffer.read_int32()
+            if solid_block_id == -1:
+                assert buffer.read_int32() == -1
+                buffer.skip(8)
+                break
+            assert solid_block_id not in self.solid_blocks
+            solid_block = SolidBlock()
+            solid_block.parse(buffer)
+            self.solid_blocks[solid_block_id] = solid_block
+
+        return self

@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import typing
+from dataclasses import dataclass
+from enum import IntEnum
+
+from gmod_scene_importer.SourceIO_adv.library.shared.types import Vector2, Vector3
+from gmod_scene_importer.SourceIO_adv.library.source1.bsp.bsp_file import VBSPFile, IBSPFile
+from gmod_scene_importer.SourceIO_adv.library.utils.file_utils import Buffer
+
+if typing.TYPE_CHECKING:
+    from gmod_scene_importer.SourceIO_adv.library.source1.bsp.lumps import TextureInfoLump, DispInfoLump
+
+
+@dataclass(slots=True)
+class Face:
+    plane_index: int
+    side: int
+    on_node: int
+    first_edge: int
+    edge_count: int
+    tex_info_id: int
+    disp_info_id: int
+    surface_fog_volume_id: int
+    styles: tuple[int, ...]
+    light_offset: int
+    area: float
+    lightmap_texture_mins_in_luxels: Vector2[int]
+    lightmap_width: int
+    lightmap_height: int
+    orig_face: int
+    prim_count: int
+    first_prim_id: int
+    smoothing_groups: int
+
+    @classmethod
+    def from_buffer(cls, buffer: Buffer, version: int, bsp: VBSPFile):
+        if version == 2:
+            plane_index = buffer.read_uint32()
+            side, on_node = buffer.read_fmt("2H")
+            first_edge = buffer.read_uint32()
+            edge_count = buffer.read_uint32()
+            tex_info_id = buffer.read_uint32()
+            disp_info_id = buffer.read_int32()
+            surface_fog_volume_id = buffer.read_uint32()
+            styles = buffer.read_fmt("4B")
+            light_offset = buffer.read_int32()
+            area = buffer.read_float()
+            lightmap_texture_mins_in_luxels = buffer.read_fmt("2i")
+            lightmap_width, lightmap_height = buffer.read_fmt("2i")
+            orig_face, prim_count, first_prim_id, smoothing_groups = buffer.read_fmt("i3I")
+            prim_count = (prim_count >> 1) & 0x7FFFFFFF
+        else:
+            (plane_index, side, on_node, first_edge, edge_count, tex_info_id, disp_info_id, surface_fog_volume_id,
+             *styles,
+             light_offset, area) = buffer.read_fmt("H2BI4h4bif")
+            lightmap_texture_mins_in_luxels = buffer.read_fmt("2i")
+            lightmap_width, lightmap_height = buffer.read_fmt("2i")
+            orig_face, prim_count, first_prim_id, smoothing_groups = buffer.read_fmt("i2Hi")
+        return cls(plane_index, side, on_node, first_edge, edge_count, tex_info_id, disp_info_id,
+                   surface_fog_volume_id, styles, light_offset, area,
+                   lightmap_texture_mins_in_luxels, lightmap_width, lightmap_height,
+                   orig_face, prim_count, first_prim_id, smoothing_groups)
+
+    # def get_tex_info(self, bsp: BSPFile):
+    #     tex_info_lump: TextureInfoLump = bsp.get_lump('LUMP_TEXINFO')
+    #     if tex_info_lump:
+    #         return tex_info_lump.texture_info[self.tex_info_id]
+    #     return None
+    #
+    # def get_disp_info(self, bsp: BSPFile):
+    #     lump: DispInfoLump = bsp.get_lump('LUMP_DISPINFO')
+    #     if lump and self.disp_info_id != -1:
+    #         return lump.infos[self.disp_info_id]
+    #     return None
+
+
+@dataclass(slots=True)
+class VampireFace(Face):
+    # struct dface_bsp17_t
+    #  {
+    #  	colorRGBExp32	m_AvgLightColor[MAXLIGHTMAPS]; // For computing lighting information
+    #  	unsigned short	planenum;
+    #  	byte		side;	// faces opposite to the node's plane direction
+    #  	byte		onNode; // 1 of on node, 0 if in leaf
+    #  	int		firstedge;		// we must support > 64k edges
+    #  	short		numedges;
+    #  	short		texinfo;
+    #  	short		dispinfo;
+    #  	short		surfaceFogVolumeID;
+    #  	byte		styles[MAXLIGHTMAPS];	// lighting info
+    #  	byte		day[MAXLIGHTMAPS];		// Nightime lightmapping system
+    #  	byte		night[MAXLIGHTMAPS];		// Nightime lightmapping system
+    #  	int		lightofs;		// start of [numstyles*surfsize] samples
+    #  	float		area;
+    #  	int		m_LightmapTextureMinsInLuxels[2];
+    #  	int		m_LightmapTextureSizeInLuxels[2];
+    #  	int		origFace;    // reference the original face this face was derived from
+    #  	unsigned int	smoothingGroups;
+    #  };
+
+    @classmethod
+    def from_buffer(cls, buffer: Buffer, version: int, bsp: 'VBSPFile'):
+        buffer.skip(4 * 8)
+        (plane_index, side, on_node, first_edge, edge_count, tex_info_id, disp_info_id,
+         surface_fog_volume_id) = buffer.read_fmt("H2BI4h")
+        styles = buffer.read_fmt("8b")
+        day_styles = buffer.read_fmt("8b")
+        night_styles = buffer.read_fmt("8b")
+        light_offset, area = buffer.read_fmt("if")
+        lightmap_texture_mins_in_luxels = buffer.read_fmt("2i")
+        lm_width, lm_height = buffer.read_fmt("2i")
+        orig_face, smoothing_groups = buffer.read_fmt("iI")
+        return cls(plane_index, side, on_node, first_edge, edge_count, tex_info_id, disp_info_id,
+                   surface_fog_volume_id, styles, light_offset, area,
+                   lightmap_texture_mins_in_luxels, lm_width, lm_height,
+                   orig_face, 0, 0, smoothing_groups)
+
+    def get_tex_info(self, bsp: 'VBSPFile'):
+        tex_info_lump: TextureInfoLump = bsp.get_lump('LUMP_TEXINFO')
+        if tex_info_lump:
+            return tex_info_lump.texture_info[self.tex_info_id]
+        return None
+
+    def get_disp_info(self, bsp: 'VBSPFile'):
+        lump: DispInfoLump = bsp.get_lump('LUMP_DISPINFO')
+        if lump and self.disp_info_id != -1:
+            return lump.infos[self.disp_info_id]
+        return None
+
+
+class VFace1(Face):
+    @classmethod
+    def from_buffer(cls, buffer: Buffer, version: int, bsp: VBSPFile):
+        (plane_index, side, on_node, unk, first_edge, edge_count, tex_info_id, disp_info_id, surface_fog_volume_id,
+         *styles,
+         light_offset, area) = buffer.read_fmt("I2BH5I4bif")
+        lightmap_texture_mins_in_luxels = buffer.read_fmt("2i")
+        lm_width, lm_height = buffer.read_fmt("2i")
+        orig_face, prim_count, first_prim_id, smoothing_groups = buffer.read_fmt("4I")
+        return cls(plane_index, side, on_node, first_edge, edge_count, tex_info_id, disp_info_id,
+                   surface_fog_volume_id, styles, light_offset, area,
+                   lightmap_texture_mins_in_luxels, lm_width, lm_height,
+                   orig_face, prim_count, first_prim_id, smoothing_groups)
+
+
+class VFace2(VFace1):
+    @classmethod
+    def from_buffer(cls, buffer: Buffer, version: int, bsp: VBSPFile):
+        (plane_index, side, on_node, unk, first_edge, edge_count, tex_info_id, disp_info_id, surface_fog_volume_id,
+         *styles,
+         light_offset, area) = buffer.read_fmt("I2BH5I4b2if")
+        lightmap_texture_mins_in_luxels = buffer.read_fmt("2i")
+        lm_width, lm_height = buffer.read_fmt("2i")
+        orig_face, prim_count, first_prim_id, smoothing_groups = buffer.read_fmt("4I")
+
+        return cls(plane_index, side, on_node, first_edge, edge_count, tex_info_id, disp_info_id,
+                   surface_fog_volume_id, styles, light_offset, area,
+                   lightmap_texture_mins_in_luxels, lm_width, lm_height,
+                   orig_face, prim_count, first_prim_id, smoothing_groups)
+
+
+class SurfaceType(IntEnum):
+    BAD = 0
+    PLANAR = 1
+    PATCH = 2
+    TRIANGLE_SOUP = 3
+    FLARE = 4
+    FOLIAGE = 5
+
+
+@dataclass(slots=True)
+class Quake3Face:
+    texture_id: int
+    effect_id: int
+    surface_type: int
+
+    vertex_offset: int
+    vertex_count: int
+
+    index_offset: int
+    indices_count: int
+
+    lightmap_id: int
+    lightmap_start: Vector2[int]
+    lightmap_size: Vector2[int]
+    lightmap_origin: Vector3[float]
+    lightmap_vecs: tuple[Vector3[float], Vector3[float]]
+    normal: Vector3[float]
+    size: Vector2[int]
+
+    @classmethod
+    def from_buffer(cls, buffer: Buffer, version: int, bsp: IBSPFile):
+        texture_id, effect_id, type_ = buffer.read_fmt('3i')
+        vertex_offset, vertex_count = buffer.read_fmt('2i')
+        mesh_vert_offset, mesh_vert_count = buffer.read_fmt('2i')
+        lightmap_id = buffer.read_int32()
+        lightmap_start = buffer.read_fmt('2i')
+        lightmap_size = buffer.read_fmt('2i')
+        lightmap_origin = buffer.read_fmt('3f')
+        lightmap_vecs = buffer.read_fmt('3f'), buffer.read_fmt('3f')
+        normal = buffer.read_fmt('3f')
+        size = buffer.read_fmt('2i')
+        return cls(texture_id, effect_id, type_,
+                   vertex_offset, vertex_count,
+                   mesh_vert_offset, mesh_vert_count,
+                   lightmap_id, lightmap_start, lightmap_size,
+                   lightmap_origin, lightmap_vecs, normal, size)
+
+
+@dataclass(slots=True)
+class RavenFace:
+    texture_id: int
+    effect_id: int
+    surface_type: SurfaceType
+
+    vertex_offset: int
+    vertex_count: int  # ydnar: num verts + foliage origins (for cleaner lighting code in q3map)
+
+    index_offset: int
+    indices_count: int
+
+    lightmap_styles: tuple[int, int, int, int]
+    vertex_styles: tuple[int, int, int, int]
+    lightmap_count: tuple[int, int, int, int]
+    lightmap_x: tuple[int, int, int, int]
+    lightmap_y: tuple[int, int, int, int]
+    lightmap_width: int
+    lightmap_height: int
+
+    lightmap_origin: Vector3
+    lightmap_vecs: tuple[Vector3, Vector3, Vector3]  # for patches, [0] and [1] are lodbounds
+
+    size: Vector2[int]  # ydnar: num foliage instances, num foliage mesh verts
+
+    @classmethod
+    def from_buffer(cls, buffer: Buffer, version: int, bsp: VBSPFile):
+        (texture_id, fog_id, surface_type,
+         vertex_offset, vertex_count,
+         index_offset, indices_count) = buffer.read_fmt('7I')
+        lightmap_styles = buffer.read_fmt("4b")
+        vertex_styles = buffer.read_fmt("4b")
+        lightmap_count = buffer.read_fmt("4i")
+        lightmap_x = buffer.read_fmt("4I")
+        lightmap_y = buffer.read_fmt("4I")
+        lightmap_width, lightmap_height = buffer.read_fmt("2I")
+        lightmap_origin = buffer.read_fmt("3f")
+        lightmap_vecs = buffer.read_fmt("3f"), buffer.read_fmt("3f"), buffer.read_fmt("3f")
+        patch_width, patch_height = buffer.read_fmt("2I")
+        return cls(texture_id, fog_id, SurfaceType(surface_type),
+                   vertex_offset, vertex_count,
+                   index_offset, indices_count,
+                   lightmap_styles, vertex_styles,
+                   lightmap_count, lightmap_x, lightmap_y,
+                   lightmap_width, lightmap_height,
+                   lightmap_origin, lightmap_vecs,
+                   (patch_width, patch_height))

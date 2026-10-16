@@ -1,0 +1,65 @@
+from typing import Iterator, Optional
+
+from gmod_scene_importer.SourceIO_adv.library.shared.app_id import SteamAppId
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.provider import ContentProvider
+from gmod_scene_importer.SourceIO_adv.library.utils import Buffer, MemoryBuffer, TinyPath
+from gmod_scene_importer.SourceIO_adv.library.utils.pylib import VPKFile
+from gmod_scene_importer.SourceIO_adv.logger import SourceLogMan
+
+log_manager = SourceLogMan()
+logger = log_manager.get_logger('VpkProvider')
+
+
+class VPKContentProvider(ContentProvider):
+    def __init__(self, filepath: TinyPath, override_steamid=SteamAppId.UNKNOWN):
+        super().__init__(filepath)
+        self._override_steamid = override_steamid
+        self._initialized = False
+        self.vpk_archive: VPKFile | None = None
+
+    def check(self, filepath: TinyPath) -> bool:
+        self._init()
+        return self.vpk_archive.check(filepath)
+
+    def get_relative_path(self, filepath: TinyPath) -> TinyPath | None:
+        return None
+
+    def get_provider_from_path(self, filepath) -> Optional['ContentProvider']:
+        if self.check(filepath):
+            return self
+        return None
+
+    def get_steamid_from_asset(self, asset_path: TinyPath) -> SteamAppId | None:
+        if self.check(asset_path):
+            return self.steam_id
+
+    def _init(self):
+        if self._initialized:
+            return
+        logger.info(f"Loading {self.filepath!r}")
+        self.vpk_archive = VPKFile(self.filepath)
+        self._initialized = True
+
+    def glob(self, pattern: str) -> Iterator[tuple[TinyPath, Buffer]]:
+        self._init()
+        for key, data in self.vpk_archive.glob(pattern):
+            yield key, MemoryBuffer(data)
+
+    def find_file(self, filepath: TinyPath) -> Optional[Buffer]:
+        self._init()
+        file = self.vpk_archive.find_file(filepath)
+        if file:
+            return MemoryBuffer(file)
+        return None
+
+    @property
+    def root(self) -> TinyPath:
+        return self.filepath.parent
+
+    @property
+    def name(self) -> str:
+        return self.filepath.stem
+
+    @property
+    def steam_id(self) -> SteamAppId:
+        return self._override_steamid

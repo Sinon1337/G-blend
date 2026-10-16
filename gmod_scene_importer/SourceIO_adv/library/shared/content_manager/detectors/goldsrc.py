@@ -1,0 +1,39 @@
+from typing import Collection
+
+from gmod_scene_importer.SourceIO_adv.library.global_config import GoldSrcConfig
+from gmod_scene_importer.SourceIO_adv.library.shared.app_id import SteamAppId
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.detectors.content_detector import ContentDetector
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.provider import ContentProvider
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.goldsrc_content_provider import (GoldSrcContentProvider,
+                                                                                        GoldSrcWADContentProvider)
+from gmod_scene_importer.SourceIO_adv.library.utils import backwalk_file_resolver, TinyPath
+
+
+class GoldSrcDetector(ContentDetector):
+    @classmethod
+    def game(cls) -> str:
+        return "Half-Life"
+
+    @classmethod
+    def find_game_root(cls, path: TinyPath) -> TinyPath | None:
+        hl_exe = backwalk_file_resolver(path, 'hl.exe')
+        if hl_exe is not None:
+            return hl_exe.parent
+        return None
+
+    @classmethod
+    def scan(cls, path: TinyPath) -> tuple[Collection[ContentProvider] | None, TinyPath | None]:
+        hl_root = cls.find_game_root(path)
+        if hl_root is None:
+            return None, None
+        mod_name = path.relative_to(hl_root).parts[0]
+        providers = set()
+        folder = hl_root / mod_name
+        if (folder / 'liblist.gam').exists():
+            cls.add_provider(GoldSrcContentProvider(folder, SteamAppId.HALF_LIFE), providers)
+        for default_resource in ('decals.wad', 'halflife.wad', 'liquids.wad', 'xeno.wad'):
+            if (folder / default_resource).exists():
+                cls.add_provider(GoldSrcWADContentProvider(folder / default_resource, SteamAppId.HALF_LIFE), providers)
+        if (hl_root / (mod_name + "_hd")).exists() and GoldSrcConfig().use_hd:
+            cls.add_provider(GoldSrcContentProvider(hl_root / (mod_name + "_hd"), SteamAppId.HALF_LIFE), providers)
+        return providers, hl_root

@@ -1,0 +1,531 @@
+import bpy
+from bpy.props import (BoolProperty, CollectionProperty, EnumProperty,
+                       StringProperty)
+from bpy_extras.io_utils import ExportHelper
+
+from .import_settings_base import ModelOptions, Source1BSPSettings
+from .operator_helper import ImportOperatorHelper
+from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.material_loader import ShaderRegistry
+from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.shaders.source1_shader_base import Source1ShaderBase
+from gmod_scene_importer.SourceIO_adv.blender_bindings.models import import_model
+from gmod_scene_importer.SourceIO_adv.blender_bindings.models.common import put_into_collections
+from gmod_scene_importer.SourceIO_adv.blender_bindings.shared.exceptions import RequiredFileNotFound
+from gmod_scene_importer.SourceIO_adv.blender_bindings.source1.bsp.import_bsp import import_bsp
+from gmod_scene_importer.SourceIO_adv.blender_bindings.source1.vtf import import_texture, load_skybox_texture
+from gmod_scene_importer.SourceIO_adv.blender_bindings.utils.bpy_utils import get_or_create_material, is_blender_4_1
+from gmod_scene_importer.SourceIO_adv.blender_bindings.utils.resource_utils import serialize_mounted_content, deserialize_mounted_content
+from gmod_scene_importer.SourceIO_adv.library.shared.app_id import SteamAppId
+from gmod_scene_importer.SourceIO_adv.library.shared.content_manager import ContentManager
+from gmod_scene_importer.SourceIO_adv.library.utils import FileBuffer
+from gmod_scene_importer.SourceIO_adv.library.utils.path_utilities import path_stem
+from gmod_scene_importer.SourceIO_adv.library.utils.tiny_path import TinyPath
+from gmod_scene_importer.SourceIO_adv.logger import SourceLogMan
+from gmod_scene_importer.SourceIO_adv.blender_bindings.source1.vtf.export_vtf import export_texture, VTFExportOptions
+from gmod_scene_importer.SourceIO_adv.library.source1.vmt import VMT
+from gmod_scene_importer.SourceIO_adv.library.utils.pylib.vtf import ImageFormat, MipFilter, TextureFlags
+
+logger = SourceLogMan().get_logger("SourceIO_adv::Operators")
+
+
+# noinspection PyPep8Naming
+class SOURCEIO_ADV_OT_MDLImport(ImportOperatorHelper, ModelOptions):
+    """Load Source Engine MDL models"""
+    bl_idname = "sourceio_adv.mdl"
+    bl_label = "Import Source MDL file"
+    bl_options = {'UNDO'}
+
+    discover_resources: BoolProperty(name="Mount discovered content", default=True)
+
+    filter_glob: StringProperty(default="*.mdl;*.md3", options={'HIDDEN'})
+
+    def execute(self, context):
+
+        directory = self.get_directory()
+        content_manager = ContentManager()
+        if self.discover_resources:
+            content_manager.scan_for_content(directory)
+            serialize_mounted_content(content_manager)
+        else:
+            deserialize_mounted_content(content_manager)
+
+        content_manager.first_import = directory
+
+        for file in self.files:
+            mdl_path = directory / file.name
+            with FileBuffer(mdl_path) as f:
+                try:
+                    model_container = import_model(mdl_path, f, content_manager, self, None)
+                except RequiredFileNotFound as e:
+                    self.report({"ERROR"}, e.message)
+                    return {'CANCELLED'}
+
+            put_into_collections(model_container, mdl_path.stem, bodygroup_grouping=self.bodygroup_grouping)
+
+            # if self.write_qc:
+            #     from ... import bl_info
+            #     from ...library.source1.qc.qc import generate_qc
+            #     qc_file = bpy.data.texts.new('{}.qc'.format(TinyPath(file.name).stem))
+            #     generate_qc(model_container.mdl, qc_file, ".".join(map(str, bl_info['version'])))
+        content_manager.first_import = None
+        content_manager.priority_list = None
+        return {'FINISHED'}
+
+
+def get_items():
+    return ([(str(-999), "Auto", "")] + [(str(e.value), e.name, "") for e in SteamAppId])
+
+
+# noinspection PyPep8Naming
+class SOURCEIO_ADV_OT_BSPImport(ImportOperatorHelper, Source1BSPSettings):
+    """Load Source Engine BSP models"""
+    bl_idname = "sourceio_adv.bsp"
+    bl_label = "Import Source BSP file"
+    bl_options = {'UNDO'}
+
+    # import_decal: BoolProperty(name="Import decals", default=False, subtype='UNSIGNED')
+    discover_resources: BoolProperty(name="Mount discovered content", default=True)
+    filter_glob: StringProperty(default="*.bsp", options={'HIDDEN'})
+    steam_app_id: bpy.props.EnumProperty(
+        name="Override steamapp id",
+        description="Override steamapp id",
+        items=get_items()
+    )
+
+    def execute(self, context):
+        content_manager = ContentManager()
+        filepath = TinyPath(self.filepath)
+        content_manager.first_import = filepath
+        if self.discover_resources:
+            content_manager.scan_for_content(filepath)
+        else:
+            deserialize_mounted_content(content_manager)
+        with FileBuffer(filepath) as f:
+            import_bsp(filepath, f, content_manager, self,
+                       SteamAppId(int(self.steam_app_id)) if self.steam_app_id != "-999" else None)
+
+        if self.discover_resources:
+            serialize_mounted_content(content_manager)
+
+        content_manager.first_import = None
+        content_manager.priority_list = None
+
+        return {'FINISHED'}
+
+
+# noinspection PyUnresolvedReferences,PyPep8Naming
+class SOURCEIO_ADV_OT_DMXImporter(bpy.types.Operator):
+    """Load Source Engine DMX scene"""
+    bl_idname = "sourceio_adv.dmx"
+    bl_label = "[!!!WIP!!!] Import Source Session file"
+    bl_options = {'UNDO'}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    files: CollectionProperty(name='File paths', type=bpy.types.OperatorFileListElement)
+    project_dir: StringProperty(default='', name='SFM project folder (usermod)')
+    filter_glob: StringProperty(default="*.dmx", options={'HIDDEN'})
+
+    def execute(self, context):
+        directory = self.get_directory()
+        for file in self.files:
+            load_session(directory / file.name, 1)
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        wm.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+# noinspection PyUnresolvedReferences,PyPep8Naming
+class SOURCEIO_ADV_OT_VTFImport(ImportOperatorHelper):
+    """Load Source Engine VTF texture"""
+    bl_idname = "sourceio_adv.vtf"
+    bl_label = "Import VTF"
+    bl_options = {'UNDO'}
+
+    filter_glob: StringProperty(default="*.vtf", options={'HIDDEN'})
+    need_popup = False
+
+    def execute(self, context):
+        directory = self.get_directory()
+
+        for file in self.files:
+            image = import_texture(TinyPath(file.name), (directory / file.name).open('rb'), True)
+            if is_blender_4_1():
+                if (context.region and context.region.type == 'WINDOW'
+                        and context.area and context.area.ui_type == 'ShaderNodeTree'
+                        and context.object and context.object.type == 'MESH'
+                        and context.material):
+                    node_tree = context.material.node_tree
+                    image_node = node_tree.nodes.new(type="ShaderNodeTexImage")
+                    image_node.image = image
+                    image_node.location = context.space_data.cursor_location
+                    for node in context.material.node_tree.nodes:
+                        node.select = False
+                    image_node.select = True
+                if (context.region and context.region.type == 'WINDOW'
+                        and context.area and context.area.ui_type in ["IMAGE_EDITOR", "UV"]):
+                    context.space_data.image = image
+
+        return {'FINISHED'}
+
+
+def get_formats():
+    return [(a.name, a.name, a.name) for (i, a) in enumerate(ImageFormat)]
+
+
+def get_filters():
+    return [(a.name, a.name, a.name) for (i, a) in enumerate(MipFilter)]
+
+def is_power_of_2(n):
+    """Check if n is a power of 2."""
+    if n <= 0:
+        return False
+    return (n & (n-1)) == 0
+
+class SOURCEIO_ADV_OT_VTFExport(bpy.types.Operator, ExportHelper):
+    bl_idname = "sourceio_adv.vtf_export"
+    bl_label = "Export VTF"
+    bl_options = {'UNDO'}
+
+    filename_ext = ".vtf"
+
+    filter_glob: bpy.props.StringProperty(default="*.vtf", options={'HIDDEN'})
+    filepath: StringProperty(
+        subtype='FILE_PATH',
+    )
+    filename: bpy.props.StringProperty(
+        name="File Name",
+        description="Name used by the exported file",
+        maxlen=512,
+        subtype='FILE_NAME',
+    )
+
+    img_format: bpy.props.EnumProperty(name="Texture format", description="Texture format", items=get_formats(),
+                                       default=ImageFormat.RGBA8888.name)
+
+    generate_mipmaps: bpy.props.BoolProperty(
+        name="Generate Mipmaps",
+        description="Generate mipmaps for the texture",
+        default=True,
+        options={'SKIP_SAVE'},
+    )
+
+    mip_filter: bpy.props.EnumProperty(name="Mipmap filter", description="Mipmap filter", items=get_filters(),
+                                       default=MipFilter.CATROM.name)
+
+    flip_green: bpy.props.BoolProperty(
+        name="Flip Green Channel",
+        description="Flip the green channel of the texture (for normal maps)",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+
+    resize_to_pow2: bpy.props.EnumProperty(
+        name="Resize to power of two",
+        description="Resize the exported texture to the nearest power of two",
+        items=(
+            ('1', "Up", "Resize the texture to the next power of two"),
+            ('2', "Down", "Resize the texture to the previous power of two"),
+            ('3', "Both", "Resize the texture to the nearest power of two, either up or down"),
+        ),
+        default='1',
+        options={'SKIP_SAVE'},
+    )
+
+    limit_resolution: bpy.props.BoolProperty(
+        name="Limit resolution",
+        description="Limit the resolution of the exported texture",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+
+    keep_aspect_ratio: bpy.props.BoolProperty(
+        name="Keep aspect ratio",
+        description="Keep the aspect ratio of the exported texture when limiting resolution",
+        default=True,
+        options={'SKIP_SAVE'},
+    )
+
+    limit_resolution_x: bpy.props.EnumProperty(
+        name="Limit resolution X",
+        description="Limit the X resolution of the exported texture",
+        items=(
+            ('4096', "4096", "4096 pixels"),
+            ('2048', "2048", "2048 pixels"),
+            ('1024', "1024", "1024 pixels"),
+            ('512', "512", "512 pixels"),
+            ('256', "256", "256 pixels"),
+            ('128', "128", "128 pixels"),
+        ),
+        default='4096',
+        options={'SKIP_SAVE'},
+    )
+    limit_resolution_y: bpy.props.EnumProperty(
+        name="Limit resolution Y",
+        description="Limit the Y resolution of the exported texture",
+        items=(
+            ('4096', "4096", "4096 pixels"),
+            ('2048', "2048", "2048 pixels"),
+            ('1024', "1024", "1024 pixels"),
+            ('512', "512", "512 pixels"),
+            ('256', "256", "256 pixels"),
+            ('128', "128", "128 pixels"),
+        ),
+        default='4096',
+        options={'SKIP_SAVE'},
+    )
+
+    fmt_remap = {a.name: a for a in list(ImageFormat)}
+    filter_remap = {a.name: a for a in list(MipFilter)}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "img_format", text="Texture Format")
+
+        layout.prop(self, "generate_mipmaps", text="Generate Mipmaps")
+        if self.generate_mipmaps:
+            layout.prop(self, "mip_filter", text="Mipmap filter")
+        layout.prop(self, "flip_green", text="Flip Green Channel")
+
+        layout.prop(self, "resize_to_pow2", text="Resize to power of two")
+        layout.prop(self, "limit_resolution", text="Limit resolution")
+        if self.limit_resolution:
+            limit_box = layout.box()
+            limit_box.prop(self, "keep_aspect_ratio", text="Keep aspect ratio")
+            limit_box.prop(self, "limit_resolution_x", text="Limit resolution X")
+            if self.keep_aspect_ratio:
+                limit_box.prop(self, "limit_resolution_y", text="Limit resolution Y")
+
+    def execute(self, context):
+        sima = context.space_data
+        ima = sima.image
+        if ima is None:
+            self.report({"ERROR_INVALID_INPUT"}, "No Image provided")
+        else:
+            if self.limit_resolution:
+                clamp_x = int(self.limit_resolution_x)
+                clamp_y = int(self.limit_resolution_y)
+                if self.keep_aspect_ratio:
+                    if ima.size[0] > ima.size[1]:
+                        clamp_y = int(clamp_x * ima.size[1] / ima.size[0])
+                    else:
+                        clamp_x = int(clamp_y * ima.size[0] / ima.size[1])
+            else:
+                clamp_x = ima.size[0]
+                clamp_y = ima.size[1]
+
+            export_options = VTFExportOptions(
+                image_format=self.fmt_remap[self.img_format],
+                filter_mode=self.filter_remap[self.mip_filter],
+                flags=TextureFlags.SRGB,
+                generate_mipmaps=self.generate_mipmaps,
+                flip_green_channel=self.flip_green,
+                resize_to_pow2=int(self.resize_to_pow2),
+                limit_resolution=self.limit_resolution,
+                keep_aspect_ratio=self.keep_aspect_ratio,
+                resolution_limit_x=clamp_x,
+                resolution_limit_y=clamp_y,
+            )
+            export_texture(ima, TinyPath(self.filepath), export_options)
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            blend_filepath = context.blend_data.filepath
+            if not blend_filepath:
+                blend_filepath = "untitled"
+            export_folder = TinyPath(blend_filepath).parent
+            self.filepath = (export_folder / (self.filename + self.filename_ext)).as_posix()
+        else:
+            self.filepath = (TinyPath(self.filepath).parent / (self.filename + self.filename_ext)).as_posix()
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+# noinspection PyUnresolvedReferences,PyPep8Naming
+class SOURCEIO_ADV_OT_SkyboxImport(ImportOperatorHelper):
+    """Load Source Engine Skybox texture"""
+    bl_idname = "sourceio_adv.vtf_skybox"
+    bl_label = "Import Skybox"
+    bl_options = {'UNDO'}
+
+    discover_resources: BoolProperty(name="Mount discovered content", default=True)
+    filter_glob: StringProperty(default="*.vmt", options={'HIDDEN'})
+
+    resolution: EnumProperty(
+        name="Skybox texture resolution",
+        description="Resolution of final skybox texture",
+        items=(
+            ('1024', "1024x512", "256mb free ram required"),
+            ('2048', "2048x1024", "512mb free ram required"),
+            ('4096', "4096x2048", "1Gb free ram required"),
+            ('8192', "8192x4096", "2Gb free ram required"),
+            ('16384', "16384x8192", "8Gb free ram required")),
+        default='2048',
+    )
+
+    def execute(self, context):
+        directory = self.get_directory()
+        content_manager = ContentManager()
+        content_manager.first_import = directory
+        if self.discover_resources:
+            content_manager.scan_for_content(directory)
+            serialize_mounted_content(content_manager)
+        else:
+            deserialize_mounted_content(content_manager)
+        for file in self.files:
+            skybox_name = path_stem(file.name)
+            load_skybox_texture(skybox_name[:-2], content_manager, int(self.resolution))
+        
+        content_manager.first_import = None
+        content_manager.priority_list = None
+
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        wm.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+# noinspection PyPep8Naming
+class SOURCEIO_ADV_OT_VMTImport(ImportOperatorHelper):
+    """Load Source Engine VMT material"""
+    bl_idname = "sourceio_adv.vmt"
+    bl_label = "Import VMT"
+    bl_options = {'UNDO'}
+
+    discover_resources: BoolProperty(name="Mount discovered content", default=True)
+    filter_glob: StringProperty(default="*.vmt", options={'HIDDEN'})
+    override: BoolProperty(default=False, name='Override existing?')
+    use_bvlg: BoolProperty(name="Use BlenderVertexLitGeneric shader", default=True, subtype='UNSIGNED')
+
+    def execute(self, context):
+        directory = self.get_directory()
+        content_manager = ContentManager()
+        content_manager.first_import = directory
+        if self.discover_resources:
+            content_manager.scan_for_content(directory)
+            serialize_mounted_content(content_manager)
+        else:
+            deserialize_mounted_content(content_manager)
+
+        for file in self.files:
+            file_path = TinyPath(file.name)
+            mat = get_or_create_material(file_path.stem, file_path.as_posix())
+
+            Source1ShaderBase.use_bvlg(self.use_bvlg)
+            material_path = directory / file.name
+            with FileBuffer(material_path) as material_file:
+                vmt = VMT(material_file, material_path, content_manager)
+
+            if mat.get('source_loaded'):
+                if self.override:
+                    del mat['source_loaded']
+                else:
+                    self.report({'INFO'}, '{} material already exists')
+            ShaderRegistry.source1_create_nodes(content_manager, mat, vmt, {})
+            
+        # content_manager.clean() # lets keep cache just in case
+        
+        content_manager.first_import = None
+        content_manager.priority_list = None
+        return {'FINISHED'}
+
+    # # noinspection PyUnresolvedReferences,PyPep8Naming
+    # class SOURCEIO_ADV_OT_VTFExport(bpy.types.Operator):
+    #     """Export VTF texture"""
+    #     bl_idname = "sourceio_adv.export_vtf"
+    #     bl_label = "Export VTF"
+    #
+    #     filename_ext = ".vtf"
+    #
+    #     filter_glob: StringProperty(default="*.vtf", options={'HIDDEN'})
+    #
+    #     filepath: StringProperty(
+    #         subtype='FILE_PATH',
+    #     )
+    #
+    #     filename: StringProperty(
+    #         name="File Name",
+    #         description="Name used by the exported file",
+    #         maxlen=255,
+    #         subtype='FILE_NAME',
+    #     )
+    #
+    #     img_format: EnumProperty(
+    #         name="VTF Type Preset",
+    #         description="Choose a preset. It will affect the result's format and flags.",
+    #         items=(
+    #             ('RGBA8888', "RGBA8888 Simple", "RGBA8888 format, format-specific Eight Bit Alpha flag only"),
+    #             ('RGBA8888Normal', "RGBA8888 Normal Map",
+    #              "RGB8888 format, format-specific Eight Bit Alpha and Normal Map flags"),
+    #             ('RGB888', "RGB888 Simple", "RGB888 format, no alpha"),
+    #             ('RGB888Normal', "RGB888 Normal Map", "RGB888 format, no alpha and Normal map flag"),
+    #             ('DXT1', "DXT1 Simple", "DXT1 format, no flags"),
+    #             ('DXT5', "DXT5 Simple", "DXT5 format, format-specific Eight Bit Alpha flag only"),
+    #             ('DXT1Normal', "DXT1 Normal Map", "DXT1 format, Normal Map flag only"),
+    #             ('DXT5Normal', "DXT5 Normal Map", "DXT5 format, format-specific Eight Bit Alpha and Normal Map flags")),
+    #         default='RGBA8888',
+    #     )
+    #     filter_mode: EnumProperty(
+    #         name='VTF mipmap filter',
+    #         items=(
+    #             ('0', 'Point Filter', 'Point Filter'),
+    #             ('1', 'Box Filter', 'Box Filter'),
+    #             ('2', 'Triangle Filter', 'Triangle Filter'),
+    #             ('3', 'Quadratic Filter', 'Quadratic Filter'),
+    #             ('4', 'Cubic Filter', 'Cubic Filter'),
+    #             ('5', 'Catrom Filter', 'Catrom Filter'),
+    #             ('6', 'Mitchell Filter', 'Mitchell Filter'),
+    #             ('7', 'Gaussian Filter', 'Gaussian Filter'),
+    #             ('8', 'SinC Filter', 'SinC Filter'),
+    #             ('9', 'Bessel Filter', 'Bessel Filter'),
+    #             ('10', 'Hanning Filter', 'Hanning Filter'),
+    #             ('11', 'Hamming Filter', 'Hamming Filter'),
+    #             ('12', 'Blackman Filter', 'Blackman Filter'),
+    #             ('13', 'Kaiser Filter', 'Kaiser Filter'),
+    #             ('14', 'Count Filter', 'Count Filter'),
+    #         ),
+    #         default='0'
+    #     )
+    #
+    #     def execute(self, context):
+    #         sima = context.space_data
+    #         ima = sima.image
+    #         if ima is None:
+    #             self.report({"ERROR_INVALID_INPUT"}, "No Image provided")
+    #         else:
+    #             logger.info(context)
+    #             export_texture(ima, self.filepath, self.img_format, self.filter_mode)
+    #         return {'FINISHED'}
+    #
+    #     def invoke(self, context, event):
+    #         if not self.filepath:
+    #             blend_filepath = context.blend_data.filepath
+    #             if not blend_filepath:
+    #                 blend_filepath = "untitled"
+    #             else:
+    #                 blend_filepath = os.path.splitext(blend_filepath)[0]
+    #                 self.filepath = os.path.join(
+    #                     os.path.dirname(blend_filepath),
+    #                     self.filename + self.filename_ext)
+    #         else:
+    #             self.filepath = os.path.join(
+    #                 os.path.dirname(
+    #                     self.filepath),
+    #                 self.filename +
+    #                 self.filename_ext)
+    #
+    #         context.window_manager.fileselect_add(self)
+    #         return {'RUNNING_MODAL'}
+    #
+    #
+    # def export(self, context):
+    #     cur_img = context.space_data.image
+    #     if cur_img is None:
+    #         self.layout.operator(SOURCEIO_ADV_OT_VTFExport.bl_idname, text='Export to VTF')
+    #     else:
+    #         self.layout.operator(SOURCEIO_ADV_OT_VTFExport.bl_idname, text='Export to VTF').filename = \
+    #             os.path.splitext(cur_img.name)[0]
