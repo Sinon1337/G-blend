@@ -151,7 +151,6 @@ If some models appear missing after import:
 
 ## 🙏 Credits
 
-- **Prosvet 3-2** — Main development
 - **SourceIO** — Bundled library for MDL/BSP/VTF parsing ([SourceIO on GitHub](https://github.com/REDxEYE/SourceIO))
 
 ---
@@ -159,5 +158,3 @@ If some models appear missing after import:
 ## 📄 License
 
 This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
-
-SourceIO (bundled) is licensed separately — see `gmod_scene_importer/SourceIO_adv/LICENSE`.
