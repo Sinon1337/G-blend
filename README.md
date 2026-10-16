@@ -6,11 +6,20 @@
 
 [![Blender](https://img.shields.io/badge/Blender-4.1%2B-orange?logo=blender&logoColor=white)](https://www.blender.org/)
 [![GMod](https://img.shields.io/badge/Garry's%20Mod-required-brightgreen)](https://store.steampowered.com/app/4000/Garrys_Mod/)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 *Import your GMod scenes, props and ARC9 weapons directly into Blender — with materials, Workshop content and full hierarchy.*
 
+[English](README.md) • [Русский](README_RU.md)
+
 </div>
+
+---
+
+## ⬇️ Downloads & Releases
+
+| Release | Asset | Size | Description | Link |
+|---|---|---|---|---|
+| **[v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0)** | `G-Blend_v1.0.zip` | 5.65 MB | Blender Addon (`gmod_scene_importer`) + SourceIO | [📦 **Download v1.0**](https://github.com/Sinon1337/G-blend/releases/download/v1.0/G-Blend_v1.0.zip) |
 
 ---
 
@@ -78,8 +87,7 @@ G-Blend/
 
 1. Copy the `gmod_exporter_addon` folder into your GMod addons directory:
    ```
-   ...\steamapps\common\GarrysMod\garrysmod\addons\gmod_exporter_addon\
-   ```
+   ...\steamapps\common\GarrysMod\garrysmodddons\gmod_exporter_addon   ```
 2. Launch or restart Garry's Mod
 3. The addon loads automatically — no extra steps needed
 
@@ -139,20 +147,6 @@ If some models appear missing after import:
 
 ---
 
-## 📋 Releases
-
-| Version | Date | Contents |
-|---------|------|---------|
-| [v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0) | 11.07.2026 | GMod Scene Importer + ARC9 Weapon Importer + GMod Exporter Addon |
-
----
-
 ## 🙏 Credits
 
 - **SourceIO** — Bundled library for MDL/BSP/VTF parsing ([SourceIO on GitHub](https://github.com/REDxEYE/SourceIO))
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
