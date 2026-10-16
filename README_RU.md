@@ -6,11 +6,20 @@
 
 [![Blender](https://img.shields.io/badge/Blender-4.1%2B-orange?logo=blender&logoColor=white)](https://www.blender.org/)
 [![GMod](https://img.shields.io/badge/Garry's%20Mod-required-brightgreen)](https://store.steampowered.com/app/4000/Garrys_Mod/)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 *Импортируй сцены, пропы и оружие ARC9 из GMod прямо в Blender — с материалами, Workshop-контентом и полной иерархией.*
 
+[English](README.md) • [Русский](README_RU.md)
+
 </div>
+
+---
+
+## ⬇️ Скачать и релизы
+
+| Релиз | Файл | Размер | Описание | Ссылка |
+|---|---|---|---|---|
+| **[v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0)** | `G-Blend_v1.0.zip` | 5.65 МБ | Аддон для Blender (`gmod_scene_importer`) + SourceIO | [📦 **Скачать v1.0**](https://github.com/Sinon1337/G-blend/releases/download/v1.0/G-Blend_v1.0.zip) |
 
 ---
 
@@ -78,8 +87,7 @@ G-Blend/
 
 1. Скопируй папку `gmod_exporter_addon` в директорию аддонов GMod:
    ```
-   ...\steamapps\common\GarrysMod\garrysmod\addons\gmod_exporter_addon\
-   ```
+   ...\steamapps\common\GarrysMod\garrysmodddons\gmod_exporter_addon   ```
 2. Запусти (или перезапусти) Garry's Mod
 3. Аддон загружается автоматически — ничего дополнительного делать не нужно
 
@@ -139,20 +147,6 @@ G-Blend/
 
 ---
 
-## 📋 Релизы
-
-| Версия | Дата | Содержимое |
-|--------|------|-----------|
-| [v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0) | 11.07.2026 | GMod Scene Importer + ARC9 Weapon Importer + GMod Exporter Addon |
-
----
-
 ## 🙏 Благодарности
 
 - **SourceIO** — встроенная библиотека для парсинга MDL/BSP/VTF ([SourceIO на GitHub](https://github.com/REDxEYE/SourceIO))
-
----
-
-## 📄 Лицензия
-
-Проект распространяется под лицензией **MIT** — подробности в файле [LICENSE](LICENSE).
