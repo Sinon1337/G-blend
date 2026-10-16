@@ -15,14 +15,6 @@
 
 ---
 
-## ⬇️ Скачать и релизы
-
-| Релиз | Файл | Размер | Описание | Ссылка |
-|---|---|---|---|---|
-| **[v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0)** | `G-Blend_v1.0.zip` | 5.65 МБ | Аддон для Blender (`gmod_scene_importer`) + SourceIO | [📦 **Скачать v1.0**](https://github.com/Sinon1337/G-blend/releases/download/v1.0/G-Blend_v1.0.zip) |
-
----
-
 ## 📦 Что внутри
 
 Репозиторий содержит **два компонента**, которые работают в связке:
@@ -87,7 +79,8 @@ G-Blend/
 
 1. Скопируй папку `gmod_exporter_addon` в директорию аддонов GMod:
    ```
-   ...\steamapps\common\GarrysMod\garrysmodddons\gmod_exporter_addon   ```
+   ...\steamapps\common\GarrysMod\garrysmod\addons\gmod_exporter_addon\
+   ```
 2. Запусти (или перезапусти) Garry's Mod
 3. Аддон загружается автоматически — ничего дополнительного делать не нужно
 
