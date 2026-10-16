@@ -144,8 +144,7 @@ G-Blend/
 
 | Версия | Дата | Содержимое |
 |--------|------|-----------|
-| FINAL252 | 17.07.2026 | GMod Scene Importer + GMod Exporter Addon |
-| FINAL274 | 18.07.2026 | Обновлённый Scene Importer + GMod Exporter Addon |
+| [v1.0](https://github.com/Sinon1337/G-blend/releases/tag/v1.0) | 11.07.2026 | GMod Scene Importer + ARC9 Weapon Importer + GMod Exporter Addon |
 
 ---
 
