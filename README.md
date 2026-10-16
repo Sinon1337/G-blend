@@ -57,8 +57,7 @@ G-Blend/
 │   ├── __init__.py
 │   ├── operators.py         ← Scene & ARC9 import logic
 │   ├── operators_cache.py   ← Workshop GMA cache system
-│   ├── operators_livelink.py
-│   ├── ui.py                ← All panels: Scene, ARC9, Live Link
+│   ├── ui.py                ← All panels: Scene Importer, ARC9 Weapon
 │   ├── gma_reader.py
 │   ├── utils.py
 │   └── SourceIO_adv/        ← Bundled SourceIO library (MDL/BSP/VTF)
