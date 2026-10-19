@@ -159,8 +159,44 @@ def extract_entity_pos(obj_data):
                 return _normalize_pos(root_pos)
     return pos
 
+def rotate_source_ang_local_z(ang, deg=90):
+    """Rotates Source engine angles [pitch, yaw, roll] by `deg` degrees around local Z axis."""
+    rad_p = math.radians(ang[0])
+    rad_y = math.radians(ang[1])
+    rad_r = math.radians(ang[2])
+    
+    mat_z = mathutils.Matrix.Rotation(rad_y, 3, 'Z')
+    mat_y = mathutils.Matrix.Rotation(rad_p, 3, 'Y')
+    mat_x = mathutils.Matrix.Rotation(rad_r, 3, 'X')
+    R_source = mat_z @ mat_y @ mat_x
+    
+    R_local = R_source @ mathutils.Matrix.Rotation(math.radians(deg), 3, 'Z')
+    
+    sp = -R_local[2][0]
+    sp = max(-1.0, min(1.0, sp))
+    pitch = math.degrees(math.asin(sp))
+    yaw = math.degrees(math.atan2(R_local[1][0], R_local[0][0]))
+    roll = math.degrees(math.atan2(R_local[2][1], R_local[2][2]))
+    return [pitch, yaw, roll]
+
 def extract_entity_ang(obj_data):
-    return _normalize_ang(obj_data.get('ang') or obj_data.get('rotation_euler'))
+    ang = _normalize_ang(obj_data.get('ang') or obj_data.get('rotation_euler'))
+    is_effect = obj_data.get('is_effect', False) or (obj_data.get('class') == 'prop_effect')
+    if is_effect:
+        bones = obj_data.get('bones', [])
+        if bones and len(bones) > 0:
+            root_ang = None
+            for b in bones:
+                p = b.get('parent')
+                if p is None or p < 0:
+                    root_ang = b.get('angle') or b.get('ang')
+                    break
+            if not root_ang and len(bones) > 0:
+                root_ang = bones[0].get('angle') or bones[0].get('ang')
+            if root_ang:
+                return _normalize_ang(root_ang)
+        return rotate_source_ang_local_z(ang, 90)
+    return ang
 
 def _normalize_scale(scale):
     if not scale:

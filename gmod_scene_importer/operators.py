@@ -1844,8 +1844,7 @@ class ImportGModScene(bpy.types.Operator):
                 apply_skin(new_obj, skin_idx)
 
             bones_data = obj_data.get('bones')
-            is_effect = obj_data.get('is_effect', False) or class_name == 'prop_effect'
-            if bones_data and not is_effect:
+            if bones_data:
                 apply_bone_poses(new_obj, bones_data, scene_origin, global_scale)
             
             # --- Store for Linking ---
