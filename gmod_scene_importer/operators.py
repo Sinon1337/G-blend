@@ -45,6 +45,10 @@ def get_content_manager(force_recreate=False):
 def _find_armature(obj):
     if obj.type == 'ARMATURE':
         return obj
+    if obj.type == 'MESH':
+        arm = obj.find_armature()
+        if arm:
+            return arm
     for child in obj.children:
         found = _find_armature(child)
         if found:
@@ -287,24 +291,16 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
             posed_matrices[pose_bone.name] = M_child_posed
 
         else:
-            if parent_matrix is None:
-                try:
-                    pose_bone.location = (0, 0, 0)
-                    pose_bone.rotation_mode = 'QUATERNION'
-                    pose_bone.rotation_quaternion = (1, 0, 0, 0)
-                    pose_bone.scale = (1, 1, 1)
-                    posed_matrices[pose_bone.name] = pose_bone.bone.matrix_local
-                except Exception as err:
-                    print(f"[GModPosing] Error setting root rest matrix for {pose_bone.name}: {err}")
+            # Missing bones in a partial pose retain their local state.
+            rest, basis = pose_bone.bone.matrix_local, pose_bone.matrix_basis
+            if parent_matrix is None or not pose_bone.parent:
+                posed_matrices[pose_bone.name] = rest @ basis
             else:
                 try:
-                    pose_bone.location = (0, 0, 0)
-                    pose_bone.rotation_mode = 'QUATERNION'
-                    pose_bone.rotation_quaternion = (1, 0, 0, 0)
-                    pose_bone.scale = (1, 1, 1)
-                    posed_matrices[pose_bone.name] = parent_matrix @ parent_bone.matrix_local.inverted() @ pose_bone.bone.matrix_local
-                except Exception as err:
-                    print(f"[GModPosing] Error setting child rest matrix for {pose_bone.name}: {err}")
+                    inv_parent = pose_bone.parent.bone.matrix_local.inverted_safe()
+                except AttributeError:
+                    inv_parent = pose_bone.parent.bone.matrix_local.inverted()
+                posed_matrices[pose_bone.name] = parent_matrix @ inv_parent @ rest @ basis
 
     bpy.context.view_layer.update()
 
@@ -1844,7 +1840,8 @@ class ImportGModScene(bpy.types.Operator):
                 apply_skin(new_obj, skin_idx)
 
             bones_data = obj_data.get('bones')
-            if bones_data:
+            is_effect = obj_data.get('is_effect', False) or (class_name == 'prop_effect')
+            if bones_data and not is_effect:
                 apply_bone_poses(new_obj, bones_data, scene_origin, global_scale)
             
             # --- Store for Linking ---
