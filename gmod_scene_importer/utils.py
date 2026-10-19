@@ -48,7 +48,8 @@ def convert_source_transform(pos, ang, scale, global_scale=0.0254):
         if isinstance(scale, (int, float)):
             scale_vec = mathutils.Vector((scale, scale, scale))
         else:
-            scale_vec = mathutils.Vector((scale[0], scale[1], scale[2]))
+            # Source: X=Forward, Y=Left, Z=Up -> Blender: X=Right (-Y), Y=Forward (X), Z=Up (Z)
+            scale_vec = mathutils.Vector((scale[1], scale[0], scale[2]))
     
     # 4. Compose Matrix
     mat_trans = mathutils.Matrix.Translation(loc_vec)
@@ -221,3 +222,47 @@ def get_or_create_collection(name, parent=None):
     else:
         bpy.context.scene.collection.children.link(new_col)
     return new_col
+
+
+def detect_gmod_root():
+    """Auto-detect Garry's Mod installation directory on Windows."""
+    import os
+    candidates = [
+        r"H:\game\steamapps\common\GarrysMod",
+        r"C:\Program Files (x86)\Steam\steamapps\common\GarrysMod",
+        r"C:\Steam\steamapps\common\GarrysMod",
+        r"D:\SteamLibrary\steamapps\common\GarrysMod",
+        r"E:\SteamLibrary\steamapps\common\GarrysMod",
+        r"F:\SteamLibrary\steamapps\common\GarrysMod",
+        r"G:\SteamLibrary\steamapps\common\GarrysMod",
+        r"H:\SteamLibrary\steamapps\common\GarrysMod",
+    ]
+    for p in candidates:
+        if os.path.isdir(p) and (os.path.isdir(os.path.join(p, "garrysmod")) or os.path.isfile(os.path.join(p, "hl2.exe"))):
+            return os.path.abspath(p)
+
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam")
+        steam_path, _ = winreg.QueryValueEx(key, "SteamPath")
+        winreg.CloseKey(key)
+        if steam_path and os.path.isdir(steam_path):
+            direct = os.path.join(steam_path, "steamapps", "common", "GarrysMod")
+            if os.path.isdir(direct):
+                return os.path.abspath(direct)
+            vdf = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
+            if os.path.isfile(vdf):
+                with open(vdf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if '"path"' in line.lower():
+                            parts = line.split('"')
+                            if len(parts) >= 4:
+                                lib = parts[3].replace("\\\\", "\\")
+                                check = os.path.join(lib, "steamapps", "common", "GarrysMod")
+                                if os.path.isdir(check):
+                                    return os.path.abspath(check)
+    except Exception:
+        pass
+
+    return None
+
