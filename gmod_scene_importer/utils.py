@@ -48,8 +48,7 @@ def convert_source_transform(pos, ang, scale, global_scale=0.0254):
         if isinstance(scale, (int, float)):
             scale_vec = mathutils.Vector((scale, scale, scale))
         else:
-            # Source: X=Forward, Y=Left, Z=Up -> Blender: X=Right (-Y), Y=Forward (X), Z=Up (Z)
-            scale_vec = mathutils.Vector((scale[1], scale[0], scale[2]))
+            scale_vec = mathutils.Vector((scale[0], scale[1], scale[2]))
     
     # 4. Compose Matrix
     mat_trans = mathutils.Matrix.Translation(loc_vec)

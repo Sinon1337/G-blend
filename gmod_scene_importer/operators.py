@@ -138,6 +138,19 @@ def find_matching_bone(armature_obj, bone_name):
     return None
 
 def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is_weapon=False, is_bsp_mode=False):
+    import time as _time
+    global POSE_LOGS
+    if 'POSE_LOGS' not in globals():
+        POSE_LOGS = []
+    POSE_LOGS.append({
+        'time': _time.time(),
+        'obj': obj.name,
+        'bones_count': len(bones_data) if bones_data else 0,
+        'is_dict': isinstance(bones_data, dict)
+    })
+    if len(POSE_LOGS) > 100:
+        POSE_LOGS.pop(0)
+
     if not bones_data:
         return
     if scene_origin is None:
@@ -146,43 +159,27 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
     armature_obj = _find_armature(obj)
     if not armature_obj:
         return
-    if getattr(armature_obj, 'gmod_pose_owner', 'SOURCE') == 'BLENDER':
-        return  # Do not feed an inbound/echo pose over a director-owned rig.
     if armature_obj.mode == 'POSE':
         return
 
     import mathutils
     import bpy
     import math
-    from gmod_scene_importer import utils
+    from . import utils
 
-    # Ensure parent/scene world matrices are evaluated before decomposing
-    bpy.context.view_layer.update()
-
+    # Build GMod poses dictionary, mapped by standardized name (case-insensitive, strip valvebiped.)
+    gmod_poses = {}
     items = bones_data.items() if isinstance(bones_data, dict) else enumerate(bones_data)
-
-    bone_queue = []
     for bone_key, bone_info in items:
         if not isinstance(bone_info, dict):
             continue
-
-        pos = bone_info.get('pos')
-        ang = bone_info.get('ang', bone_info.get('angle'))
         bone_name = bone_info.get('name', bone_key if isinstance(bone_key, str) else None)
-
-        pose_bone = None
         if bone_name:
-            pose_bone = armature_obj.pose.bones.get(bone_name) or find_matching_bone(armature_obj, bone_name)
-        if not pose_bone and isinstance(bone_key, (int, str)) and str(bone_key).isdigit():
-            idx = int(bone_key)
-            if idx < len(armature_obj.pose.bones):
-                pose_bone = armature_obj.pose.bones[idx]
+            std_name = bone_name.lower().strip().replace("valvebiped.", "")
+            gmod_poses[std_name] = (bone_info.get('pos'), bone_info.get('ang', bone_info.get('angle')), bone_info)
 
-        if pos and ang and pose_bone:
-            bone_queue.append((pose_bone, pos, ang, bone_info))
-
-    def bone_depth(item):
-        pb = item[0]
+    # Sort all pose bones by depth to ensure parents are always evaluated before children
+    def get_bone_depth(pb):
         d = 0
         b = pb.parent
         while b:
@@ -190,67 +187,151 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
             b = b.parent
         return d
 
-    bone_queue.sort(key=bone_depth)
+    all_pose_bones = sorted(armature_obj.pose.bones, key=get_bone_depth)
 
-    loc, rot, scale = armature_obj.matrix_world.decompose()
-    armature_world_no_scale = mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+    loc_world = armature_obj.location.copy()
+    if armature_obj.rotation_mode == 'QUATERNION':
+        rot_world = armature_obj.rotation_quaternion.copy()
+    else:
+        rot_world = armature_obj.rotation_euler.to_quaternion()
+    armature_world_no_scale = mathutils.Matrix.Translation(loc_world) @ rot_world.to_matrix().to_4x4()
     armature_world_inv = armature_world_no_scale.inverted()
 
-    # Check if this armature is a standard character (has Bip01 bones)
-    has_bip_bones = any("bip01_" in b.name.lower() for b in armature_obj.pose.bones)
+    posed_matrices = {}
 
-    for pose_bone, pos, ang, bone_info in bone_queue:
-        if has_bip_bones and not is_weapon:
-            # For characters, only apply GMod poses to core body bones (containing Bip01_).
-            # Auxiliary bones (helmets, attachments, face bones, gear) inherit their poses from their parents.
-            is_body_bone = "bip01_" in pose_bone.name.lower() or pose_bone.parent is None
-            if not is_body_bone:
-                continue
+    for pose_bone in all_pose_bones:
+        if abs(pose_bone.bone.matrix_local.determinant()) < 1e-5:
+            continue
+        if pose_bone.parent and abs(pose_bone.parent.bone.matrix_local.determinant()) < 1e-5:
+            continue
 
-        # World-space bone poses format
-        rel_pos = utils.subtract_origin(pos, scene_origin)
-        if is_bsp_mode:
-            loc_vec = mathutils.Vector((rel_pos[0], rel_pos[1], rel_pos[2])) * global_scale
-            mat_x = mathutils.Matrix.Rotation(math.radians(ang[2]), 4, 'X')
-            mat_y = mathutils.Matrix.Rotation(math.radians(ang[0]), 4, 'Y')
-            mat_z = mathutils.Matrix.Rotation(math.radians(ang[1]), 4, 'Z')
-            rot_mat = mat_z @ mat_y @ mat_x
-            target_matrix_world = mathutils.Matrix.Translation(loc_vec) @ rot_mat
-        else:
-            target_matrix_world = utils.convert_source_transform(rel_pos, ang, [1, 1, 1], global_scale)
+        std_name = pose_bone.name.lower().replace("valvebiped.", "")
+        gmod_pose = gmod_poses.get(std_name)
+        if not gmod_pose:
+            # Fallback matching with prefixes
+            for prefix in ["attachment_", "attach_"]:
+                if std_name.startswith(prefix):
+                    base_name = std_name[len(prefix):]
+                    gmod_pose = gmod_poses.get(base_name)
+                    if gmod_pose:
+                        break
 
-        target_matrix_armature = armature_world_inv @ target_matrix_world
-        loc_gmod, rot_gmod, scale_gmod = target_matrix_armature.decompose()
-
-        # Support custom bone scales from GMod bone manipulation / resizer
-        custom_scale = bone_info.get('scale')
-        if custom_scale:
-            scale_matrix = mathutils.Matrix.Diagonal((custom_scale[0], custom_scale[1], custom_scale[2], 1.0))
-        else:
-            scale_matrix = mathutils.Matrix.Scale(1.0, 4)
-
-        target_matrix_clean = mathutils.Matrix.Translation(loc_gmod) @ rot_gmod.to_matrix().to_4x4() @ scale_matrix
-
-        if pose_bone.parent is None:
-            pose_bone.matrix = target_matrix_clean
-        else:
-            clean_name = pose_bone.name.replace("ValveBiped.", "")
-            prevent_stretch = clean_name in ["Bip01_Head1", "Bip01_Neck1", "Bip01_Neck", "Bip01_Head"]
-
-            if prevent_stretch:
+        # Retrieve parent matrix from our posed cache to ensure 100% fresh parenting coordinates
+        parent_matrix = None
+        if pose_bone.parent:
+            parent_matrix = posed_matrices.get(pose_bone.parent.name)
+            if parent_matrix is None:
                 parent_matrix = pose_bone.parent.matrix
+
+        if gmod_pose:
+            pos, ang, bone_info = gmod_pose
+            rel_pos = utils.subtract_origin(pos, scene_origin)
+            if is_bsp_mode:
+                loc_vec = mathutils.Vector((rel_pos[0], rel_pos[1], rel_pos[2])) * global_scale
+            else:
+                loc_vec = mathutils.Vector((-rel_pos[1], rel_pos[0], rel_pos[2])) * global_scale
+
+            pitch, yaw, roll = ang[0], ang[1], ang[2]
+            mat_x = mathutils.Matrix.Rotation(math.radians(roll),  4, 'X')
+            mat_y = mathutils.Matrix.Rotation(math.radians(pitch), 4, 'Y')
+            mat_z = mathutils.Matrix.Rotation(math.radians(yaw),   4, 'Z')
+            if is_bsp_mode:
+                rot_mat = mat_z @ mat_y @ mat_x
+            else:
+                coord_fix = mathutils.Matrix.Rotation(math.radians(90), 4, 'Z')
+                rot_mat = coord_fix @ mat_z @ mat_y @ mat_x
+
+            target_matrix_world = mathutils.Matrix.Translation(loc_vec) @ rot_mat
+            target_matrix_armature = armature_world_inv @ target_matrix_world
+            loc_gmod, rot_gmod, _ = target_matrix_armature.decompose()
+
+            custom_scale = bone_info.get('scale')
+            if custom_scale:
+                scale_matrix = mathutils.Matrix.Diagonal((custom_scale[0], custom_scale[1], custom_scale[2], 1.0))
+            else:
+                scale_matrix = mathutils.Matrix.Scale(1.0, 4)
+
+            scene = bpy.context.scene
+            lerp_factor = scene.gmod_livelink_lerp_factor if hasattr(scene, "gmod_livelink_lerp_factor") else 1.0
+
+            target_matrix_clean = mathutils.Matrix.Translation(loc_gmod) @ rot_gmod.to_matrix().to_4x4() @ scale_matrix
+
+            if parent_matrix is None:
+                M_child_targ = target_matrix_clean
+                matrix_basis = pose_bone.bone.matrix_local.inverted() @ M_child_targ
+            else:
                 child_bone = pose_bone.bone
                 parent_bone = pose_bone.parent.bone
-
+                
                 rest_local_matrix = parent_bone.matrix_local.inverted() @ child_bone.matrix_local
                 rest_local_translation = rest_local_matrix.to_translation()
                 anatomical_loc = parent_matrix @ rest_local_translation
+                
+                target_matrix_child = mathutils.Matrix.Translation(anatomical_loc) @ rot_gmod.to_matrix().to_4x4() @ scale_matrix
+                M_child_targ = target_matrix_child
+                
+                matrix_basis = pose_bone.bone.matrix_local.inverted() @ parent_bone.matrix_local @ parent_matrix.inverted() @ M_child_targ
 
-                pose_bone.matrix = mathutils.Matrix.Translation(anatomical_loc) @ rot_gmod.to_matrix().to_4x4() @ scale_matrix
+            if lerp_factor < 0.999:
+                try:
+                    t_prev = pose_bone.location.copy()
+                    r_prev = pose_bone.rotation_quaternion.copy() if pose_bone.rotation_mode == 'QUATERNION' else pose_bone.rotation_euler.to_quaternion()
+                    s_prev = pose_bone.scale.copy()
+                    
+                    t_targ = matrix_basis.to_translation()
+                    r_targ = matrix_basis.to_quaternion()
+                    s_targ = matrix_basis.to_scale()
+                    
+                    t_interp = t_prev.lerp(t_targ, lerp_factor)
+                    r_interp = r_prev.slerp(r_targ, lerp_factor)
+                    s_interp = s_prev.lerp(s_targ, lerp_factor)
+                    
+                    pose_bone.location = t_interp
+                    pose_bone.rotation_mode = 'QUATERNION'
+                    pose_bone.rotation_quaternion = r_interp
+                    pose_bone.scale = s_interp
+                    
+                    scale_diag = mathutils.Matrix.Diagonal((s_interp[0], s_interp[1], s_interp[2], 1.0))
+                    matrix_basis = mathutils.Matrix.Translation(t_interp) @ r_interp.to_matrix().to_4x4() @ scale_diag
+                except Exception:
+                    pose_bone.location = matrix_basis.to_translation()
+                    pose_bone.rotation_mode = 'QUATERNION'
+                    pose_bone.rotation_quaternion = matrix_basis.to_quaternion()
+                    pose_bone.scale = matrix_basis.to_scale()
             else:
-                pose_bone.matrix = target_matrix_clean
+                pose_bone.location = matrix_basis.to_translation()
+                pose_bone.rotation_mode = 'QUATERNION'
+                pose_bone.rotation_quaternion = matrix_basis.to_quaternion()
+                pose_bone.scale = matrix_basis.to_scale()
 
-    bpy.context.view_layer.update()
+            if pose_bone.parent:
+                M_child_posed = parent_matrix @ parent_bone.matrix_local.inverted() @ pose_bone.bone.matrix_local @ matrix_basis
+            else:
+                M_child_posed = pose_bone.bone.matrix_local @ matrix_basis
+            posed_matrices[pose_bone.name] = M_child_posed
+
+        else:
+            if parent_matrix is None:
+                try:
+                    pose_bone.location = (0, 0, 0)
+                    pose_bone.rotation_mode = 'QUATERNION'
+                    pose_bone.rotation_quaternion = (1, 0, 0, 0)
+                    pose_bone.scale = (1, 1, 1)
+                    posed_matrices[pose_bone.name] = pose_bone.bone.matrix_local
+                except Exception as err:
+                    print(f"[GModPosing] Error setting root rest matrix for {pose_bone.name}: {err}")
+            else:
+                try:
+                    pose_bone.location = (0, 0, 0)
+                    pose_bone.rotation_mode = 'QUATERNION'
+                    pose_bone.rotation_quaternion = (1, 0, 0, 0)
+                    pose_bone.scale = (1, 1, 1)
+                    posed_matrices[pose_bone.name] = parent_matrix @ parent_bone.matrix_local.inverted() @ pose_bone.bone.matrix_local
+                except Exception as err:
+                    print(f"[GModPosing] Error setting child rest matrix for {pose_bone.name}: {err}")
+            
+    pass  # view_layer.update() is intentionally skipped — Blender updates lazily per frame   
+    pass  # view_layer.update() is intentionally skipped — Blender updates lazily per frame
 
 def apply_skin(obj, skin_index):
     """
@@ -1775,7 +1856,7 @@ class ImportGModScene(bpy.types.Operator):
                 apply_skin(new_obj, skin_idx)
 
             bones_data = obj_data.get('bones')
-            if bones_data:
+            if bones_data and not obj_data.get('is_effect', False):
                 apply_bone_poses(new_obj, bones_data, scene_origin, global_scale)
             
             # --- Store for Linking ---
