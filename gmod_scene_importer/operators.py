@@ -56,70 +56,86 @@ def apply_skeleton_pose(armature_obj, skeleton_data, global_scale, weapon_root_o
         return
     import mathutils
     import bpy
-    from gmod_scene_importer import utils
-
-    # Save active object to restore later
+    from . import utils
+    
     prev_active = bpy.context.view_layer.objects.active
     bpy.context.view_layer.objects.active = armature_obj
-
-    # Force view layer update so parented world matrix is correct
     bpy.context.view_layer.update()
-
-    # Decompose armature world matrix without scale
-    loc, rot, scale = armature_obj.matrix_world.decompose()
+    
+    loc, rot, _ = armature_obj.matrix_world.decompose()
     armature_world_no_scale = mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
     armature_world_inv = armature_world_no_scale.inverted()
-
+    
     if isinstance(skeleton_data, list):
         bones = skeleton_data
     else:
         bones = skeleton_data.get("bones", [])
-
-    # Sort bones by depth (parents first)
-    def bone_depth_sort(b_data):
-        b_name = b_data.get("name")
-        pb = find_matching_bone(armature_obj, b_name)
-        if not pb:
-            return 999
+        
+    bones_by_name = {b.get("name"): b for b in bones if b.get("name")}
+    
+    def get_bone_depth(pb):
         d = 0
         p = pb.parent
         while p:
             d += 1
             p = p.parent
         return d
+        
+    sorted_pose_bones = sorted(armature_obj.pose.bones, key=get_bone_depth)
+    posed_object_space_cache = {}
+    
+    for pb in sorted_pose_bones:
+        b_data = bones_by_name.get(pb.name)
+        if not b_data:
+            matched = find_matching_bone(armature_obj, pb.name)
+            if matched and matched.name in bones_by_name:
+                b_data = bones_by_name[matched.name]
+                
+        parent_pb = pb.parent
+        parent_matrix = posed_object_space_cache.get(parent_pb.name) if parent_pb else None
+        
+        if b_data:
+            pos = b_data.get("pos")
+            ang = b_data.get("ang")
+            if not pos or not ang:
+                continue
+                
+            scl = b_data.get("scale", [1.0, 1.0, 1.0])
+            M_local_blender = utils.convert_source_transform(pos, ang, scl, global_scale)
+            M_world_blender = weapon_root_obj.matrix_world @ M_local_blender
+            target_matrix_armature = armature_world_inv @ M_world_blender
+            
+            loc_t, rot_t, _ = target_matrix_armature.decompose()
+            scale_matrix = mathutils.Matrix.Diagonal((scl[0], scl[1], scl[2], 1.0))
+            M_target_clean = mathutils.Matrix.Translation(loc_t) @ rot_t.to_matrix().to_4x4() @ scale_matrix
+            
+            if parent_matrix is None:
+                matrix_basis = pb.bone.matrix_local.inverted() @ M_target_clean
+            else:
+                child_bone = pb.bone
+                parent_bone = parent_pb.bone
+                matrix_basis = child_bone.matrix_local.inverted() @ parent_bone.matrix_local @ parent_matrix.inverted() @ M_target_clean
+                
+            pb.location = matrix_basis.to_translation()
+            pb.rotation_mode = 'QUATERNION'
+            pb.rotation_quaternion = matrix_basis.to_quaternion()
+            pb.scale = matrix_basis.to_scale()
 
-    sorted_bones = sorted(bones, key=bone_depth_sort)
-
-    SKIP_BONE_PREFIXES = ()
-
-    for bone_data in sorted_bones:
-        b_name = bone_data.get("name")
-        pose_bone = find_matching_bone(armature_obj, b_name)
-        if not pose_bone:
-            continue
-
-        b_lower = b_name.lower()
-        if any(b_lower.startswith(p) for p in SKIP_BONE_PREFIXES):
-            continue
-
-        pos = bone_data.get("pos")
-        ang = bone_data.get("ang")
-        if not pos or not ang:
-            continue
-
-        scl = bone_data.get("scale", [1.0, 1.0, 1.0])
-
-        M_local_blender = utils.convert_source_transform(pos, ang, scl, global_scale)
-        M_world_blender = weapon_root_obj.matrix_world @ M_local_blender
-
-        target_matrix_armature = armature_world_inv @ M_world_blender
-
-        loc_gmod, rot_gmod, scale_gmod = target_matrix_armature.decompose()
-        scale_matrix = mathutils.Matrix.Diagonal((scl[0], scl[1], scl[2], 1.0))
-        target_matrix_clean = mathutils.Matrix.Translation(loc_gmod) @ rot_gmod.to_matrix().to_4x4() @ scale_matrix
-
-        pose_bone.matrix = target_matrix_clean
-
+            if parent_matrix is None:
+                M_posed = pb.bone.matrix_local @ matrix_basis
+            else:
+                M_posed = parent_matrix @ parent_bone.matrix_local.inverted() @ pb.bone.matrix_local @ matrix_basis
+            posed_object_space_cache[pb.name] = M_posed
+        else:
+            pb.location = (0, 0, 0)
+            pb.rotation_mode = 'QUATERNION'
+            pb.rotation_quaternion = (1, 0, 0, 0)
+            pb.scale = (1, 1, 1)
+            if parent_matrix is None:
+                posed_object_space_cache[pb.name] = pb.bone.matrix_local
+            else:
+                posed_object_space_cache[pb.name] = parent_matrix @ parent_pb.bone.matrix_local.inverted() @ pb.bone.matrix_local
+                
     bpy.context.view_layer.update()
     bpy.context.view_layer.objects.active = prev_active
 
@@ -138,19 +154,6 @@ def find_matching_bone(armature_obj, bone_name):
     return None
 
 def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is_weapon=False, is_bsp_mode=False):
-    import time as _time
-    global POSE_LOGS
-    if 'POSE_LOGS' not in globals():
-        POSE_LOGS = []
-    POSE_LOGS.append({
-        'time': _time.time(),
-        'obj': obj.name,
-        'bones_count': len(bones_data) if bones_data else 0,
-        'is_dict': isinstance(bones_data, dict)
-    })
-    if len(POSE_LOGS) > 100:
-        POSE_LOGS.pop(0)
-
     if not bones_data:
         return
     if scene_origin is None:
@@ -159,6 +162,8 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
     armature_obj = _find_armature(obj)
     if not armature_obj:
         return
+    if getattr(armature_obj, 'gmod_pose_owner', 'SOURCE') == 'BLENDER':
+        return  # Do not feed an inbound/echo pose over a director-owned rig.
     if armature_obj.mode == 'POSE':
         return
 
@@ -189,11 +194,12 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
 
     all_pose_bones = sorted(armature_obj.pose.bones, key=get_bone_depth)
 
-    loc_world = armature_obj.location.copy()
-    if armature_obj.rotation_mode == 'QUATERNION':
-        rot_world = armature_obj.rotation_quaternion.copy()
-    else:
-        rot_world = armature_obj.rotation_euler.to_quaternion()
+    try:
+        armature_world = armature_obj.matrix_world.copy()
+    except Exception:
+        armature_world = mathutils.Matrix.Identity(4)
+
+    loc_world, rot_world, scale_world = armature_world.decompose()
     armature_world_no_scale = mathutils.Matrix.Translation(loc_world) @ rot_world.to_matrix().to_4x4()
     armature_world_inv = armature_world_no_scale.inverted()
 
@@ -251,9 +257,6 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
             else:
                 scale_matrix = mathutils.Matrix.Scale(1.0, 4)
 
-            scene = bpy.context.scene
-            lerp_factor = scene.gmod_livelink_lerp_factor if hasattr(scene, "gmod_livelink_lerp_factor") else 1.0
-
             target_matrix_clean = mathutils.Matrix.Translation(loc_gmod) @ rot_gmod.to_matrix().to_4x4() @ scale_matrix
 
             if parent_matrix is None:
@@ -272,37 +275,10 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
                 
                 matrix_basis = pose_bone.bone.matrix_local.inverted() @ parent_bone.matrix_local @ parent_matrix.inverted() @ M_child_targ
 
-            if lerp_factor < 0.999:
-                try:
-                    t_prev = pose_bone.location.copy()
-                    r_prev = pose_bone.rotation_quaternion.copy() if pose_bone.rotation_mode == 'QUATERNION' else pose_bone.rotation_euler.to_quaternion()
-                    s_prev = pose_bone.scale.copy()
-                    
-                    t_targ = matrix_basis.to_translation()
-                    r_targ = matrix_basis.to_quaternion()
-                    s_targ = matrix_basis.to_scale()
-                    
-                    t_interp = t_prev.lerp(t_targ, lerp_factor)
-                    r_interp = r_prev.slerp(r_targ, lerp_factor)
-                    s_interp = s_prev.lerp(s_targ, lerp_factor)
-                    
-                    pose_bone.location = t_interp
-                    pose_bone.rotation_mode = 'QUATERNION'
-                    pose_bone.rotation_quaternion = r_interp
-                    pose_bone.scale = s_interp
-                    
-                    scale_diag = mathutils.Matrix.Diagonal((s_interp[0], s_interp[1], s_interp[2], 1.0))
-                    matrix_basis = mathutils.Matrix.Translation(t_interp) @ r_interp.to_matrix().to_4x4() @ scale_diag
-                except Exception:
-                    pose_bone.location = matrix_basis.to_translation()
-                    pose_bone.rotation_mode = 'QUATERNION'
-                    pose_bone.rotation_quaternion = matrix_basis.to_quaternion()
-                    pose_bone.scale = matrix_basis.to_scale()
-            else:
-                pose_bone.location = matrix_basis.to_translation()
-                pose_bone.rotation_mode = 'QUATERNION'
-                pose_bone.rotation_quaternion = matrix_basis.to_quaternion()
-                pose_bone.scale = matrix_basis.to_scale()
+            pose_bone.location = matrix_basis.to_translation()
+            pose_bone.rotation_mode = 'QUATERNION'
+            pose_bone.rotation_quaternion = matrix_basis.to_quaternion()
+            pose_bone.scale = matrix_basis.to_scale()
 
             if pose_bone.parent:
                 M_child_posed = parent_matrix @ parent_bone.matrix_local.inverted() @ pose_bone.bone.matrix_local @ matrix_basis
@@ -329,9 +305,8 @@ def apply_bone_poses(obj, bones_data, scene_origin=None, global_scale=0.0254, is
                     posed_matrices[pose_bone.name] = parent_matrix @ parent_bone.matrix_local.inverted() @ pose_bone.bone.matrix_local
                 except Exception as err:
                     print(f"[GModPosing] Error setting child rest matrix for {pose_bone.name}: {err}")
-            
-    pass  # view_layer.update() is intentionally skipped — Blender updates lazily per frame   
-    pass  # view_layer.update() is intentionally skipped — Blender updates lazily per frame
+
+    bpy.context.view_layer.update()
 
 def apply_skin(obj, skin_index):
     """
@@ -1178,9 +1153,17 @@ class ImportGModScene(bpy.types.Operator):
         
         # Try Cache
         cached_abs_path = operators_cache.WorkshopCacheManager.resolve_path(sanitized_path)
+        if not cached_abs_path or not os.path.exists(cached_abs_path):
+             gmod_root = context.scene.get('gmod_last_root') or getattr(context.scene, 'gmod_root_path', '')
+             cached_abs_path = operators_cache.WorkshopCacheManager.ensure_model_in_cache(
+                 context, sanitized_path, gmod_root=gmod_root
+             )
+
+        loaded_from = None
         if cached_abs_path and os.path.exists(cached_abs_path):
              print(f"[GModImporter] Loading {sanitized_path} FROM CACHE: {cached_abs_path}")
              file_buffer = FileBuffer(cached_abs_path, 'rb')
+             loaded_from = f"Cache: {cached_abs_path}"
              
              # JIT Mount: add root (parent of 'models/') as LooseFilesContentProvider directly
              path_parts = os.path.normpath(cached_abs_path).split(os.sep)
@@ -1204,6 +1187,7 @@ class ImportGModScene(bpy.types.Operator):
              file_buffer = cm.find_file(model_path)
              if file_buffer:
                  print(f"[GModImporter] Loading {sanitized_path} FROM SOURCEIO PROVIDER")
+                 loaded_from = f"SourceIO ({sanitized_path})"
              
         if not file_buffer:
              print(f"[GModImporter] ERROR: Could not find model file: {sanitized_path}")
@@ -1253,7 +1237,9 @@ class ImportGModScene(bpy.types.Operator):
         new_obj.name = cache_name
         new_obj.location = (0, 0, 0)
         new_obj.rotation_euler = (0, 0, 0)
-        new_obj.scale = (1, 1, 1)
+        new_obj["gmod_model"] = sanitized_path
+        if loaded_from:
+            new_obj["gmod_loaded_from"] = loaded_from
 
         cache_col = utils.get_or_create_collection("IMPORT_CACHE")
         self.link_hierarchy_recursive(new_obj, cache_col)
@@ -1415,6 +1401,8 @@ class ImportGModScene(bpy.types.Operator):
         # --- POST-PROCESS: Kill Phong Globally ---
         self.kill_phong_globally()
         
+        cache_path = operators_cache.WorkshopCacheManager.get_cache_path(context)
+        self.report({'INFO'}, f"GMod scene imported! Cache: {cache_path}")
         return {'FINISHED'}
 
     def kill_phong_globally(self):
@@ -1856,7 +1844,7 @@ class ImportGModScene(bpy.types.Operator):
                 apply_skin(new_obj, skin_idx)
 
             bones_data = obj_data.get('bones')
-            if bones_data and not obj_data.get('is_effect', False):
+            if bones_data:
                 apply_bone_poses(new_obj, bones_data, scene_origin, global_scale)
             
             # --- Store for Linking ---

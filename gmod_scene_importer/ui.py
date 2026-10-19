@@ -23,11 +23,15 @@ class GMOD_PT_ImportPanel(bpy.types.Panel):
         box.label(text="Workshop Cache (HD / Missing)")
         box.prop(context.scene, "gmod_workshop_path", text="Workshop Content")
         box.prop(context.scene, "gmod_cache_path", text="Cache Storage")
+        from . import operators_cache
+        active_cache = operators_cache.WorkshopCacheManager.get_cache_path(context)
+        box.label(text=f"Active: {active_cache}", icon='FILE_FOLDER')
         box.prop(context.scene, "gmod_cache_workers")
         
         row = box.row()
-        row.operator("gmod.scan_workshop", icon='FILE_REFRESH', text="Scan & Cache GMAs")
-        row.operator("gmod.clear_cache", icon='TRASH', text="Clear Cache")
+        row.operator("gmod.scan_workshop", icon='FILE_REFRESH', text="Scan GMAs")
+        row.operator("gmod.open_cache", icon='FOLDER_REDIRECT', text="Open Cache")
+        row.operator("gmod.clear_cache", icon='TRASH', text="Clear")
         
         
         layout.separator()
@@ -73,11 +77,16 @@ class GMOD_PT_ARC9WeaponPanel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Workshop Cache (HD / Missing)")
         box.prop(scene, "gmod_weapon_cache_path", text="Cache Storage")
+        from . import operators_cache
+        active_w_cache = operators_cache.WorkshopCacheManager.get_cache_path(context, is_weapon=True)
+        box.label(text=f"Active: {active_w_cache}", icon='FILE_FOLDER')
         
         row = box.row()
-        op_scan = row.operator("gmod.scan_workshop", icon='FILE_REFRESH', text="Scan & Cache GMAs")
+        op_scan = row.operator("gmod.scan_workshop", icon='FILE_REFRESH', text="Scan GMAs")
         op_scan.is_weapon = True
-        op_clear = row.operator("gmod.clear_cache", icon='TRASH', text="Clear Cache")
+        op_open = row.operator("gmod.open_cache", icon='FOLDER_REDIRECT', text="Open Cache")
+        op_open.is_weapon = True
+        op_clear = row.operator("gmod.clear_cache", icon='TRASH', text="Clear")
         op_clear.is_weapon = True
         
         layout.separator()
@@ -325,7 +334,15 @@ class GMOD_PT_BodygroupsPanel(bpy.types.Panel):
             op_next.max_val = max_skin
             op_next.obj_name = target_obj.name
             
-            layout.separator()
+        # Show origin/model source if available
+        loaded_origin = target_obj.get("gmod_loaded_from") or (obj.get("gmod_loaded_from") if obj != target_obj else None)
+        model_name = target_obj.get("gmod_model") or (obj.get("gmod_model") if obj != target_obj else None)
+        if loaded_origin or model_name:
+            box_info = layout.box()
+            if model_name:
+                box_info.label(text=f"Model: {model_name.split('/')[-1]}", icon='OBJECT_DATA')
+            if loaded_origin:
+                box_info.label(text=f"Source: {loaded_origin}", icon='INFO')
 
         # 3. Load bodygroups for the target object
         if "source_bodygroups_json" not in target_obj:

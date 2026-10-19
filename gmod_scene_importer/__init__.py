@@ -68,6 +68,7 @@ classes = (
     operators.GModRetryMissing,
     operators.GModBrowseAndLoadMdl,
     operators_cache.GModScanWorkshop,
+    operators_cache.GModOpenCache,
     operators_cache.GModClearCache,
     operators_cache.GModDumpIndex,
     ui.GMOD_PT_ImportPanel,

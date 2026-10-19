@@ -58,18 +58,26 @@ def extract_vmt_paths_from_mdl(mdl_data):
 
 class WorkshopCacheManager:
     @staticmethod
-    def get_cache_path(context, is_weapon=False):
-        if is_weapon and context.scene.gmod_weapon_cache_path:
-            return context.scene.gmod_weapon_cache_path
-        path = context.scene.gmod_cache_path
+    def get_cache_path(context=None, is_weapon=False):
+        path = ""
+        if context and hasattr(context, "scene"):
+            if is_weapon and getattr(context.scene, "gmod_weapon_cache_path", ""):
+                path = context.scene.gmod_weapon_cache_path
+            else:
+                path = getattr(context.scene, "gmod_cache_path", "")
         if not path:
-            # Default to Blender Config/gmod_cache
-            # Or User Home
             path = os.path.join(bpy.utils.resource_path('USER'), "gmod_workshop_cache")
+        try:
+            os.makedirs(path, exist_ok=True)
+            os.makedirs(os.path.join(path, "merged_content"), exist_ok=True)
+        except Exception as e:
+            print(f"[GModCache] Warning: Could not create cache folder: {e}")
         return path
 
     # Track which cache dir was last indexed to detect path changes
     _last_indexed_cache_dir = ""
+    # In-memory registry of model paths already resolved to avoid re-scanning on every spawn
+    _resolved_mdl_cache: dict = {}
     
     @staticmethod
     def rebuild_index(context, force=False, is_weapon=False):
@@ -83,16 +91,27 @@ class WorkshopCacheManager:
         if (not force 
                 and len(ASSET_INDEX) > 0 
                 and WorkshopCacheManager._last_indexed_cache_dir == cache_dir):
+            print(f"[GModCache] Index rebuild skipped (already indexed {len(ASSET_INDEX)} assets)")
             return len(ASSET_INDEX)
             
         ASSET_INDEX.clear()
         
         print(f"[GModCache] Indexing assets in: {cache_dir}")
+        print(f"[GModCache] Cache directory exists: {os.path.exists(cache_dir)}")
         
         if not os.path.exists(cache_dir):
+            print(f"[GModCache] Cache directory does not exist, creating it...")
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+            except Exception as e:
+                print(f"[GModCache] Failed to create cache directory: {e}")
             return 0
             
         count = 0
+        mdl_count = 0
+        vmt_count = 0
+        vtf_count = 0
+        
         # Walk ALL files in cache
         for root, dirs, files in os.walk(cache_dir):
             for file in files:
@@ -111,21 +130,359 @@ class WorkshopCacheManager:
                     
                     ASSET_INDEX[virtual_path] = abs_path.replace('\\', '/')
                     count += 1
+                    
+                    if ext == 'mdl':
+                        mdl_count += 1
+                    elif ext == 'vmt':
+                        vmt_count += 1
+                    elif ext == 'vtf':
+                        vtf_count += 1
                         
                     if count <= 5:
                         print(f"[GModCache] Indexed ({count}): '{virtual_path}'")
                         
-        print(f"[GModCache] Index complete. Found {count} assets.")
+        print(f"[GModCache] Index complete. Found {count} total assets ({mdl_count} MDL, {vmt_count} VMT, {vtf_count} VTF).")
         WorkshopCacheManager._last_indexed_cache_dir = cache_dir
         return count
 
     @staticmethod
     def resolve_path(virtual_path):
         """Returns absolute path from index or None"""
-        # virtual_path ex: "models/props_junk/wood_crate001a.mdl"
-        # normalize
-        key = virtual_path.replace('\\', '/').lower()
-        return ASSET_INDEX.get(key)
+        key = virtual_path.replace('\\', '/').lower().lstrip('/')
+        if key in ASSET_INDEX:
+            return ASSET_INDEX[key]
+            
+        # Direct check fallback to avoid thread-blocking walks on sync
+        if hasattr(WorkshopCacheManager, "active_cache_dir") and WorkshopCacheManager.active_cache_dir:
+            direct = os.path.normpath(os.path.join(WorkshopCacheManager.active_cache_dir, key))
+            if os.path.exists(direct):
+                abs_path = direct.replace('\\', '/')
+                ASSET_INDEX[key] = abs_path
+                return abs_path
+        return None
+
+    @staticmethod
+    def _collect_gma_sources(context, gmod_root):
+        """Build list of (abs_path, id_name) GMA/folder sources to search."""
+        sources = []
+        seen = set()
+
+        def add(path, label):
+            ap = os.path.abspath(path)
+            if ap in seen or not os.path.exists(ap):
+                return
+            seen.add(ap)
+            sources.append((ap, label))
+
+        if gmod_root and os.path.isdir(gmod_root):
+            garrysmod = os.path.join(gmod_root, "garrysmod")
+            if not os.path.isdir(garrysmod):
+                garrysmod = gmod_root
+
+            import pathlib
+            gmod_path = pathlib.Path(gmod_root)
+            workshop_candidates = [
+                gmod_path.parent.parent / "workshop" / "content" / "4000",
+                gmod_path.parent.parent.parent / "workshop" / "content" / "4000",
+                pathlib.Path(os.path.dirname(gmod_root)) / "workshop" / "content" / "4000",
+                pathlib.Path("C:/Program Files (x86)/Steam/steamapps/workshop/content/4000"),
+                pathlib.Path(os.path.expanduser("~/Steam/steamapps/workshop/content/4000")),
+            ]
+            # Dedicated server install often sits next to client GarrysMod folder
+            for parent in [gmod_path.parent, gmod_path.parent.parent]:
+                client = parent / "GarrysMod"
+                if client.exists():
+                    workshop_candidates.append(client.parent.parent / "workshop" / "content" / "4000")
+                    workshop_candidates.append(client / "steamapps" / "workshop" / "content" / "4000")
+            workshop_content = None
+            for candidate in workshop_candidates:
+                if candidate.exists():
+                    workshop_content = str(candidate)
+                    break
+            if workshop_content and os.path.exists(workshop_content):
+                for item in os.listdir(workshop_content):
+                    p = os.path.join(workshop_content, item)
+                    if os.path.isdir(p):
+                        for f in os.listdir(p):
+                            if f.lower().endswith((".gma", ".bin", ".cache")):
+                                add(os.path.join(p, f), item)
+                                break
+                    elif item.lower().endswith((".gma", ".bin", ".cache")):
+                        add(p, os.path.splitext(item)[0])
+
+            addons_dir = os.path.join(garrysmod, "addons")
+            if os.path.exists(addons_dir):
+                for item in os.listdir(addons_dir):
+                    p = os.path.join(addons_dir, item)
+                    if item.lower().endswith((".gma", ".cache")):
+                        add(p, os.path.splitext(item)[0])
+                    elif os.path.isdir(p):
+                        add(p, item)
+
+            cache_ws = os.path.join(garrysmod, "cache", "workshop")
+            if os.path.exists(cache_ws):
+                for item in os.listdir(cache_ws):
+                    if item.lower().endswith((".gma", ".bin", ".cache")):
+                        add(os.path.join(cache_ws, item), os.path.splitext(item)[0])
+
+        workshop_path = getattr(context.scene, "gmod_workshop_path", None) if (context and hasattr(context, "scene")) else None
+        if workshop_path and os.path.isdir(workshop_path):
+            for item in os.listdir(workshop_path):
+                p = os.path.join(workshop_path, item)
+                if os.path.isdir(p):
+                    for f in os.listdir(p):
+                        if f.lower().endswith((".gma", ".bin", ".cache")):
+                            add(os.path.join(p, f), item)
+                            break
+                elif item.lower().endswith((".gma", ".bin", ".cache")):
+                    add(p, os.path.splitext(item)[0])
+
+        return sources
+
+    @staticmethod
+    def _files_needed_for_model(model_path_normalized):
+        """Return set of virtual paths to extract for a Source model."""
+        needed = {model_path_normalized}
+        base = os.path.splitext(model_path_normalized)[0]
+        needed.add(base + ".vvd")
+        needed.add(base + ".phy")
+
+        mat_prefix = "materials/" + base
+        needed.add(mat_prefix + ".vmt")
+        needed.add(mat_prefix + "/")
+
+        # Companion mesh files use prefix match
+        required_prefixes = {base + "."}
+        return needed, required_prefixes
+
+    @staticmethod
+    def ensure_model_in_cache(context, model_path_str, gmod_root=None, force=False):
+        """
+        Ensure a single model (and companions) exists in merged_content.
+        Returns absolute path to .mdl in cache, or None.
+        """
+        if not model_path_str:
+            return None
+        cache_dir = WorkshopCacheManager.get_cache_path(context)
+        return WorkshopCacheManager.ensure_model_in_cache_threadsafe(
+            model_path_str, cache_dir, gmod_root=gmod_root, force=force
+        )
+
+    @staticmethod
+    def ensure_model_in_cache_threadsafe(model_path_str, cache_dir, gmod_root=None, force=False):
+        if not model_path_str or not cache_dir:
+            return None
+        model_path_normalized = model_path_str.replace('\\', '/').lower().lstrip('/')
+        if not model_path_normalized.endswith('.mdl'):
+            return None
+
+        merged_dir = os.path.join(os.path.abspath(cache_dir), "merged_content")
+        os.makedirs(merged_dir, exist_ok=True)
+        WorkshopCacheManager.active_cache_dir = merged_dir
+
+        # Fast-path: check in-memory registry first (sub-millisecond)
+        if not force and model_path_normalized in WorkshopCacheManager._resolved_mdl_cache:
+            cached_fast = WorkshopCacheManager._resolved_mdl_cache[model_path_normalized]
+            if os.path.exists(cached_fast):
+                return cached_fast
+
+        direct = os.path.join(merged_dir, model_path_normalized)
+        if not force and os.path.exists(direct):
+            WorkshopCacheManager._resolved_mdl_cache[model_path_normalized] = direct
+            return direct
+
+        cached = WorkshopCacheManager.resolve_path(model_path_normalized)
+        if not force and cached and os.path.exists(cached):
+            WorkshopCacheManager._resolved_mdl_cache[model_path_normalized] = cached
+            return cached
+
+        # Auto-detect gmod_root if missing or invalid
+        if not gmod_root or not os.path.isdir(gmod_root):
+            try:
+                from .utils import detect_gmod_root
+                gmod_root = detect_gmod_root()
+            except Exception:
+                gmod_root = None
+
+        needed_exact, required_prefixes = WorkshopCacheManager._files_needed_for_model(model_path_normalized)
+        extracted_any = False
+
+        # 1. Folder addons / loose files
+        sources = WorkshopCacheManager._collect_gma_sources(None, gmod_root)
+        for src_path, _label in sources:
+            if os.path.isdir(src_path):
+                copied = False
+                for related in needed_exact:
+                    loose = os.path.join(src_path, related.replace('/', os.sep))
+                    if os.path.isfile(loose):
+                        target = os.path.join(merged_dir, related)
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        shutil.copy2(loose, target)
+                        copied = True
+                # Also copy vtx/vvd/phy by prefix
+                model_base = os.path.splitext(model_path_normalized)[0]
+                prefix = model_base.replace('/', os.sep)
+                for root, _dirs, files in os.walk(src_path):
+                    for fname in files:
+                        rel_from_src = os.path.relpath(os.path.join(root, fname), src_path).replace('\\', '/').lower()
+                        if rel_from_src.startswith(model_base + ".") or rel_from_src == model_path_normalized:
+                            target = os.path.join(merged_dir, rel_from_src)
+                            os.makedirs(os.path.dirname(target), exist_ok=True)
+                            shutil.copy2(os.path.join(root, fname), target)
+                            copied = True
+                if copied:
+                    extracted_any = True
+                    print(f"[GModCache] LiveLink: copied model files from folder addon {src_path}")
+
+        # 2. VPK extraction (GMod base content) - Run first to avoid scanning all GMAs for base assets
+        mdl_abs = os.path.join(merged_dir, model_path_normalized)
+        if not os.path.exists(mdl_abs) and gmod_root and os.path.isdir(gmod_root):
+            try:
+                from .sourceio_bridge import VPKContentProvider, TinyPath, FileBuffer
+
+                # Resolve search directories: garrysmod, sourceengine, hl2, and parent folder equivalents if in a dedicated server subfolder
+                vpk_search_dirs = []
+                roots_to_check = [gmod_root]
+                gmod_root_abs = os.path.abspath(gmod_root)
+                path_parts = os.path.normpath(gmod_root_abs).split(os.sep)
+                if any(p.lower() in ["serv", "server", "srcds"] for p in path_parts):
+                    parent_dir = os.path.dirname(gmod_root_abs)
+                    if parent_dir and os.path.isdir(parent_dir):
+                        roots_to_check.append(parent_dir)
+                
+                for r in roots_to_check:
+                    for sub in ["garrysmod", "sourceengine", "hl2", ""]:
+                        p = os.path.join(r, sub) if sub else r
+                        if os.path.isdir(p) and p not in vpk_search_dirs:
+                            vpk_search_dirs.append(p)
+                
+                model_base = os.path.splitext(model_path_normalized)[0]
+                vpk_pending = set(needed_exact) | {model_path_normalized}
+                
+                for vpk_dir in vpk_search_dirs:
+                    if not vpk_pending:
+                        break
+                    for vpk_file in os.listdir(vpk_dir):
+                        if not vpk_pending:
+                            break
+                        if not vpk_file.lower().endswith(".vpk") or "_dir.vpk" not in vpk_file.lower():
+                            continue
+                        try:
+                            provider = VPKContentProvider(TinyPath(os.path.join(vpk_dir, vpk_file)))
+                            vpk_matches = set()
+                            for exact in list(vpk_pending):
+                                if provider.find_file(TinyPath(exact)):
+                                    vpk_matches.add(exact)
+                            if not vpk_matches:
+                                for arc_name, arc_buf in provider.glob(model_base + ".*"):
+                                    rel = str(arc_name).replace('\\', '/').lower().lstrip('/')
+                                    if rel.startswith(model_base + "."):
+                                        vpk_matches.add(rel)
+                            for rel in vpk_matches:
+                                fb = provider.find_file(TinyPath(rel))
+                                if not fb:
+                                    continue
+                                target = os.path.join(merged_dir, rel)
+                                os.makedirs(os.path.dirname(target), exist_ok=True)
+                                with open(target, 'wb') as out_f:
+                                    out_f.write(fb.read())
+                                extracted_any = True
+                                vpk_pending.discard(rel)
+                            if vpk_matches:
+                                print(f"[GModCache] LiveLink: extracted {len(vpk_matches)} files from VPK {vpk_file} in {vpk_dir}")
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"[GModCache] LiveLink: VPK search failed: {e}")
+
+        # 3. GMA surgical extraction - Only run if model MDL file is still missing from cache
+        mdl_abs = os.path.join(merged_dir, model_path_normalized)
+        if not os.path.exists(mdl_abs):
+            pending = set(needed_exact)
+            import json
+            catalog_dir = os.path.join(cache_dir, "catalogs")
+            os.makedirs(catalog_dir, exist_ok=True)
+            
+            for gma_path, gma_id in sources:
+                if not pending and extracted_any:
+                    break
+                if os.path.isdir(gma_path):
+                    continue
+                try:
+                    arc_files = []
+                    catalog_path = os.path.join(catalog_dir, f"{gma_id}.json")
+                    if os.path.exists(catalog_path):
+                        try:
+                            with open(catalog_path, 'r', encoding='utf-8') as f_cat:
+                                arc_files = json.load(f_cat)
+                        except:
+                            pass
+                            
+                    if not arc_files:
+                        with gma_reader.GMAReader(gma_path) as reader:
+                            arc_files = [e.name.replace('\\', '/').lower().lstrip('/') for e in reader.file_entries]
+                        try:
+                            with open(catalog_path, 'w', encoding='utf-8') as f_cat:
+                                json.dump(arc_files, f_cat)
+                        except:
+                            pass
+
+                    matches = set()
+                    for f in arc_files:
+                        if f in pending:
+                            matches.add(f)
+                        elif any(f.startswith(pref) for pref in required_prefixes):
+                            matches.add(f)
+
+                    if not matches:
+                        continue
+
+                    with gma_reader.GMAReader(gma_path) as reader:
+                        if reader.extract_files(merged_dir, matches) > 0:
+                            extracted_any = True
+                            pending -= matches
+                            print(f"[GModCache] LiveLink: extracted {len(matches)} files from {gma_id}")
+                except Exception as e:
+                    print(f"[GModCache] LiveLink: GMA read failed {gma_path}: {e}")
+
+        # 4. MDL header → queue VMT dependencies
+        mdl_abs = os.path.join(merged_dir, model_path_normalized)
+        if os.path.exists(mdl_abs):
+            try:
+                with open(mdl_abs, 'rb') as mdl_f:
+                    vmts = extract_vmt_paths_from_mdl(mdl_f.read())
+                vmt_pending = {v for v in vmts if not os.path.exists(os.path.join(merged_dir, v))}
+                if vmt_pending:
+                    for gma_path, gma_id in sources:
+                        if not vmt_pending or os.path.isdir(gma_path):
+                            continue
+                        try:
+                            with gma_reader.GMAReader(gma_path) as reader:
+                                arc_files = [e.name.replace('\\', '/').lower().lstrip('/') for e in reader.file_entries]
+                            matches = {f for f in arc_files if f in vmt_pending}
+                            if matches:
+                                with gma_reader.GMAReader(gma_path) as reader:
+                                    reader.extract_files(merged_dir, matches)
+                                vmt_pending -= matches
+                                extracted_any = True
+                                print(f"[GModCache] LiveLink: extracted {len(matches)} VMTs for {model_path_normalized}")
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"[GModCache] LiveLink: MDL VMT scan failed: {e}")
+
+        # After extraction: try direct path first (avoids full os.walk rebuild)
+        if extracted_any:
+            direct = os.path.join(merged_dir, model_path_normalized)
+            if os.path.exists(direct):
+                WorkshopCacheManager._resolved_mdl_cache[model_path_normalized] = direct
+                ASSET_INDEX[model_path_normalized] = direct
+                print(f"[GModCache] LiveLink: cached {model_path_normalized}")
+                return direct
+            return None
+
+        print(f"[GModCache] LiveLink: cache MISS for {model_path_normalized}")
+        return None
 
 class GModScanWorkshop(bpy.types.Operator):
     """Scan Workshop folder and extract new GMAs to Cache"""
@@ -235,10 +592,10 @@ class GModScanWorkshop(bpy.types.Operator):
                 p = os.path.join(workshop_content, item)
                 if os.path.isdir(p):
                     for f in os.listdir(p):
-                        if f.lower().endswith((".gma", ".bin")):
+                        if f.lower().endswith((".gma", ".bin", ".cache")):
                             gma_queue.append((os.path.abspath(os.path.join(p, f)), item))
                             break
-                elif item.lower().endswith((".gma", ".bin")):
+                elif item.lower().endswith((".gma", ".bin", ".cache")):
                      gma_queue.append((os.path.abspath(p), os.path.splitext(item)[0]))
         
         root_path = context.scene.gmod_root_path
@@ -247,7 +604,7 @@ class GModScanWorkshop(bpy.types.Operator):
             if os.path.exists(addons_dir):
                 for item in os.listdir(addons_dir):
                     p = os.path.join(addons_dir, item)
-                    if item.lower().endswith(".gma"):
+                    if item.lower().endswith((".gma", ".cache")):
                         gma_queue.append((os.path.abspath(p), os.path.splitext(item)[0]))
                     elif os.path.isdir(p):
                         gma_queue.append((os.path.abspath(p), item))
@@ -257,7 +614,7 @@ class GModScanWorkshop(bpy.types.Operator):
             if os.path.exists(cache_ws_dir):
                 for item in os.listdir(cache_ws_dir):
                     p = os.path.join(cache_ws_dir, item)
-                    if item.lower().endswith((".gma", ".bin")):
+                    if item.lower().endswith((".gma", ".bin", ".cache")):
                         gma_queue.append((os.path.abspath(p), os.path.splitext(item)[0]))
 
         # 3. Smart Surgical Matching (SMART PASS)
@@ -562,7 +919,7 @@ class GModClearCache(bpy.types.Operator):
                 global ASSET_INDEX
                 ASSET_INDEX.clear()
                 try:
-                    from gmod_scene_importer.operators_livelink import FAILED_REFINE_IDS, BONE_UPDATE_THROTTLE
+                    from .operators_livelink import FAILED_REFINE_IDS, BONE_UPDATE_THROTTLE
                     FAILED_REFINE_IDS.clear()
                     BONE_UPDATE_THROTTLE.clear()
                     print("[GModCache] Cleared JIT Refine failures cache and bone throttle.")
@@ -596,4 +953,25 @@ class GModDumpIndex(bpy.types.Operator):
                 break
         print("=================================\n")
         self.report({'INFO'}, f"Index Dumped ({len(ASSET_INDEX)} entries). Check Console.")
+        return {'FINISHED'}
+
+class GModOpenCache(bpy.types.Operator):
+    """Open the Workshop Cache folder in Windows Explorer"""
+    bl_idname = "gmod.open_cache"
+    bl_label = "Open Cache Folder"
+    
+    is_weapon: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
+    
+    def execute(self, context):
+        cache_dir = WorkshopCacheManager.get_cache_path(context, self.is_weapon)
+        cache_dir = bpy.path.abspath(cache_dir).strip().strip('"').strip("'")
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            bpy.ops.wm.path_open(filepath=cache_dir)
+        except Exception:
+            try:
+                import subprocess
+                subprocess.Popen(f'explorer "{cache_dir}"')
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to open folder: {e}")
         return {'FINISHED'}
