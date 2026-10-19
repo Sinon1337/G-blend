@@ -2,17 +2,14 @@ import bpy
 import os
 import glob
 from .operators import ImportGModScene, SOURCEIO_AVAILABLE, get_content_manager, setup_gmod_mounts, apply_mat_fixes
+from .sourceio_bridge import ShaderRegistry, ShaderBase, VMT, TinyPath, FileBuffer
 from . import operators_cache
 
 def pull_materials_for_targets(operator_instance, context, target_objs, is_weapon=False):
-    if not SOURCEIO_AVAILABLE:
-        operator_instance.report({'ERROR'}, "SourceIO Addon not found!")
+    if not SOURCEIO_AVAILABLE or ShaderBase is None:
+        operator_instance.report({'ERROR'}, "SourceIO Addon not found or failed to load!")
         return {'CANCELLED'}
-        
-    from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.material_loader import ShaderRegistry
-    from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.shader_base import ShaderBase
-    from gmod_scene_importer.SourceIO_adv.library.source1.vmt import VMT
-    from gmod_scene_importer.SourceIO_adv.library.utils.tiny_path import TinyPath
+
     
     # --- Resolve armatures to their child meshes ---
     resolved_targets = []
@@ -167,8 +164,7 @@ def pull_materials_for_targets(operator_instance, context, target_objs, is_weapo
                         if matches:
                             abs_cached_vmt = matches[0]
                             
-                    if abs_cached_vmt and os.path.exists(abs_cached_vmt):
-                        from gmod_scene_importer.SourceIO_adv.library.utils import FileBuffer
+                    if abs_cached_vmt and os.path.exists(abs_cached_vmt) and FileBuffer:
                         vmt_f = FileBuffer(abs_cached_vmt)
             
             if vmt_f:

@@ -21,6 +21,7 @@ import importlib
 #     sys.path.insert(0, addon_dir)
 
 # Submodules
+from . import sourceio_bridge
 from . import utils
 from . import gma_reader
 from . import operators_cache
@@ -30,6 +31,7 @@ from . import operators
 from . import ui
 
 # Force reload of all submodules during development
+importlib.reload(sourceio_bridge)
 importlib.reload(utils)
 importlib.reload(gma_reader)
 importlib.reload(operators_cache)
@@ -154,31 +156,8 @@ def register():
     bpy.types.Object.gmod_bg_categories = bpy.props.CollectionProperty(type=GModBGCategoryItem)
     bpy.types.Object.gmod_bg_active_category = bpy.props.IntProperty(name="Active Category Index", default=-1, min=-1)
     bpy.types.Object.show_bg_ui = bpy.props.BoolProperty(name="Show Bodygroup UI", default=False)
-        
-    # Check if the user has a global SourceIO enabled
-    global_sourceio_installed = False
-    try:
-        import SourceIO
-        global_sourceio_installed = True
-        print("[GModImporter] User has a global SourceIO enabled. Skipping SourceIO_adv UI registration.")
-    except ImportError:
-        pass
-        
-    # Only register SourceIO_adv UI if the user does NOT have SourceIO enabled
-    if not global_sourceio_installed:
-        try:
-            from gmod_scene_importer.SourceIO_adv.blender_bindings.bindings import register as sio_register
-            sio_register()
-            print("[GModImporter] Registered SourceIO_adv UI.")
-        except Exception as e:
-            print(f"[GModImporter] Failed to register SourceIO_adv UI: {e}")
-            
-    # Always register properties for SourceIO_adv so the backend works
-    try:
-        from gmod_scene_importer.SourceIO_adv.blender_bindings.attributes import register_props
-        register_props()
-    except Exception as e:
-        print(f"[GModImporter] Failed to register SourceIO_adv props: {e}")
+    # Register SourceIO UI and properties if needed
+    sourceio_bridge.register_sourceio_ui()
         
     bpy.types.Scene.gmod_json_path = bpy.props.StringProperty(
         name="Scene JSON",
@@ -480,17 +459,7 @@ def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
         
-    try:
-        from gmod_scene_importer.SourceIO_adv.blender_bindings.bindings import unregister as sio_unregister
-        sio_unregister()
-    except:
-        pass
-        
-    try:
-        from gmod_scene_importer.SourceIO_adv.blender_bindings.attributes import unregister_props
-        unregister_props()
-    except:
-        pass
+    sourceio_bridge.unregister_sourceio_ui()
         
     del bpy.types.Scene.gmod_json_path
     del bpy.types.Scene.gmod_root_path

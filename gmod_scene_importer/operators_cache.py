@@ -415,7 +415,7 @@ class GModScanWorkshop(bpy.types.Operator):
                 if map_file.endswith('.bsp'):
                     bsp_path = os.path.join(maps_dir, map_file)
                     try:
-                        from gmod_scene_importer.SourceIO_adv.library.source1.bsp.bsp_file import BSPFile
+                        from .sourceio_bridge import BSPFile
                         import re
                         strip_patch_coordinates = re.compile(r"_-?\d+_-?\d+_-?\d+$")
                         bsp = BSPFile(bsp_path)

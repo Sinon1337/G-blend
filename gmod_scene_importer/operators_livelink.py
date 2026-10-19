@@ -347,10 +347,7 @@ def find_and_load_map(map_name):
         
     print(f"[GModLiveLink] Auto-loading map geometry from: {bsp_path}")
     try:
-        from gmod_scene_importer.SourceIO_adv.blender_bindings.source1.bsp.import_bsp import import_bsp
-        from gmod_scene_importer.SourceIO_adv.library.shared.content_manager import ContentManager
-        from gmod_scene_importer.SourceIO_adv.library.utils import FileBuffer
-        from gmod_scene_importer.SourceIO_adv.library.utils.tiny_path import TinyPath
+        from .sourceio_bridge import import_bsp, ContentManager, FileBuffer, TinyPath
         
         class DummyBSPSettings:
             scale = bpy.context.scene.gmod_global_scale

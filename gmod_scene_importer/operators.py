@@ -6,152 +6,30 @@ import mathutils
 from . import utils
 from . import operators_cache
 
-# SourceIO Imports
-try:
-    from gmod_scene_importer.SourceIO_adv.library.shared.content_manager import ContentManager
-    from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.vpk_provider import VPKContentProvider
-    from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.gma_provider import GMAContentProvider
-    from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
-    from gmod_scene_importer.SourceIO_adv.library.utils import TinyPath, FileBuffer
-    from gmod_scene_importer.SourceIO_adv.blender_bindings.models import import_model
-    from gmod_scene_importer.SourceIO_adv.blender_bindings.utils.resource_utils import serialize_mounted_content
-    from gmod_scene_importer.SourceIO_adv.blender_bindings.utils.bpy_utils import get_or_create_material
+# SourceIO Bridge
+from .sourceio_bridge import (
+    SOURCEIO_AVAILABLE,
+    IS_EXTERNAL_SOURCEIO,
+    SOURCEIO_ERROR,
+    ContentManager,
+    VPKContentProvider,
+    GMAContentProvider,
+    LooseFilesContentProvider,
+    TinyPath,
+    FileBuffer,
+    Buffer,
+    import_model,
+    serialize_mounted_content,
+    get_or_create_material,
+    ShaderRegistry,
+    ShaderBase,
+    VMT,
+    BSPFile,
+    import_bsp,
+    ModelOptions,
+    setup_gmod_mounts,
+)
 
-    def setup_gmod_mounts(context, cm, user_path, override_cache_path=None):
-        from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
-        from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.vpk_provider import VPKContentProvider
-        from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.gma_provider import GMAContentProvider
-        
-        # 0. GMod Root (Loose Files from downloads/etc)
-        garrysmod_dir = user_path / "garrysmod" if (user_path / "garrysmod").exists() else user_path
-        if garrysmod_dir.exists():
-            cm.add_child(LooseFilesContentProvider(TinyPath(str(garrysmod_dir))))
-
-        # 1. Local Addons (Priority 1)
-        addons_dir = None
-        for p in [user_path / "garrysmod/addons", user_path / "addons"]:
-            if p.exists():
-                addons_dir = p
-                break
-        
-        if addons_dir:
-            for item in os.listdir(str(addons_dir)):
-                item_path = addons_dir / item
-                if item.lower().endswith(".gma"):
-                    cm.add_child(GMAContentProvider(TinyPath(str(item_path))))
-                elif os.path.isdir(str(item_path)):
-                    cm.add_child(LooseFilesContentProvider(TinyPath(str(item_path))))
-                    
-        # 1.5 Local Workshop Cache (GarrysMod/garrysmod/cache/workshop)
-        local_workshop = None
-        for p in [user_path / "garrysmod/cache/workshop", user_path / "cache/workshop"]:
-            if p.exists():
-                local_workshop = p
-                break
-        
-        if local_workshop:
-            for item in os.listdir(str(local_workshop)):
-                if item.lower().endswith(".gma"):
-                    cm.add_child(GMAContentProvider(TinyPath(str(local_workshop / item))))
-
-        # 3. Standard Games (HL2 / CSS)
-        game_root = user_path
-        if getattr(context.scene, "gmod_mount_standard", True):
-            if game_root:
-                hl2_dir = game_root / "hl2"
-                se_dir = game_root / "sourceengine"
-                target_dirs = [d for d in [hl2_dir, se_dir] if d.exists()]
-                for t_dir in target_dirs:
-                    cm.add_child(LooseFilesContentProvider(TinyPath(str(t_dir))))
-                    cm.add_child(VPKContentProvider(TinyPath(str(t_dir / "hl2_textures_dir.vpk"))))
-                    cm.add_child(VPKContentProvider(TinyPath(str(t_dir / "hl2_misc_dir.vpk"))))
-                    # Also try to mount content_hl2_dir.vpk if it exists
-                    if (t_dir / "content_hl2_dir.vpk").exists():
-                        cm.add_child(VPKContentProvider(TinyPath(str(t_dir / "content_hl2_dir.vpk"))))
-
-        # 2. Native Steam Workshop (.bin / .gma)
-        workshop_path = getattr(context.scene, "gmod_workshop_path", None)
-        if not workshop_path or not os.path.exists(workshop_path):
-            auto_path = user_path.parent.parent / "workshop/content/4000"
-            if auto_path.exists():
-                workshop_path = str(auto_path)
-            else:
-                auto_path = user_path.parent.parent.parent / "workshop/content/4000"
-                if auto_path.exists():
-                    workshop_path = str(auto_path)
-                    
-        if workshop_path and os.path.exists(workshop_path):
-            workshop_p = TinyPath(workshop_path)
-            import itertools
-            for gma in itertools.chain(workshop_p.glob('**/*.gma'), workshop_p.glob('**/*.bin')):
-                try: cm.add_child(GMAContentProvider(gma))
-                except Exception: pass
-
-        # 3. Workshop Cache (Priority 3)
-        cache_path = override_cache_path
-        if not cache_path:
-            cache_path = getattr(context.scene, "gmod_cache_path", None)
-        if not cache_path:
-             cache_path = os.path.join(bpy.utils.resource_path('USER'), "gmod_workshop_cache")
-        merged_cache_path = os.path.join(cache_path, "merged_content")
-        if os.path.exists(merged_cache_path):
-            cm.add_child(LooseFilesContentProvider(TinyPath(merged_cache_path)))
-
-        # 3. GMod Base Content (Priority 3)
-        gmod_base_dir = user_path / 'garrysmod' if (user_path / 'garrysmod').exists() else user_path
-        if gmod_base_dir.exists():
-            for f in os.listdir(str(gmod_base_dir)):
-                f_low = f.lower()
-                if f_low.endswith(".vpk"):
-                    is_numbered_part = any(char.isdigit() for char in f_low.split('.')[-2][-3:]) if len(f_low.split('.')) > 1 else False
-                    if "_dir.vpk" in f_low or not any(c.isdigit() for c in f_low.replace(".vpk", "")[-3:]):
-                        try: cm.add_child(VPKContentProvider(TinyPath(str(gmod_base_dir / f))))
-                        except Exception as e: print(f"    [!] Failed to mount {f}: {e}")
-
-        # 4. Standard Games (Priority 4: Lowest)
-        if getattr(context.scene, "gmod_mount_css_hl2", False):
-            game_root = user_path
-            if (user_path / 'hl2').exists(): game_root = user_path
-            elif (user_path.parent / 'hl2').exists(): game_root = user_path.parent
-            
-            common_parents = [game_root, game_root.parent]
-            dirs_to_mount = ['hl2', 'cstrike', 'episodic', 'ep2', 'tf', 'portal', 'lostcoast']
-            for p_dir in common_parents:
-                for d in dirs_to_mount:
-                    p = p_dir / d
-                    if p.exists(): cm.scan_for_content(p)
-            
-            mount_cfg = (user_path / "garrysmod/cfg/mount.cfg") if (user_path / "garrysmod").exists() else (user_path / "cfg/mount.cfg")
-            if mount_cfg.exists():
-                try:
-                    with open(mount_cfg, 'r') as f:
-                        import re
-                        matches = re.findall(r'"(.*?)"\s+"(.*?)"', f.read())
-                        for m_key, m_val in matches:
-                            if m_key == "mountcfg": continue
-                            pm = TinyPath(m_val.replace('\\', '/'))
-                            if pm.exists(): cm.scan_for_content(pm)
-                except: pass
-        
-        # --- NUCLEAR FILTER: Extra layer of security ---
-        if not getattr(context.scene, "gmod_mount_css_hl2", False):
-             try:
-                 filtered = []
-                 for provider in cm.children:
-                     p_str = str(provider.root).lower().replace('\\', '/')
-                     is_leaked = any(x in p_str for x in ["/hl2", "/cstrike", "/episodic", "/ep2", "/tf", "/portal"])
-                     is_trusted = ("merged_content" in p_str or "garrysmod" in p_str or "garrys mod" in p_str or "addons" in p_str or "steamapps" in p_str)
-                     if is_leaked and not is_trusted: continue
-                     filtered.append(provider)
-                 cm.children = filtered
-             except Exception as e: print(f"[GModImporter] Filter Error: {e}")
-
-    SOURCEIO_AVAILABLE = True
-except Exception as e:
-    import traceback
-    print("[GModImporter] Failed to import SourceIO_adv:")
-    traceback.print_exc()
-    SOURCEIO_AVAILABLE = False
 
 # Global Persistent Content Manager
 _SHARED_CONTENT_MANAGER = None
@@ -1246,7 +1124,7 @@ class ImportGModScene(bpy.types.Operator):
                      break
              if addon_root and os.path.isdir(addon_root):
                  try:
-                     from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
+                     from .sourceio_bridge import LooseFilesContentProvider
                      cm.add_child(LooseFilesContentProvider(TinyPath(addon_root)))
                      print(f"[GModImporter] JIT mounted (direct): {addon_root}")
                  except Exception as _jit_e:
@@ -1735,10 +1613,7 @@ class ImportGModScene(bpy.types.Operator):
                 
                 # Setup BVLG for ShaderRegistry
                 try:
-                    from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.material_loader import ShaderRegistry
-                    from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.shader_base import ShaderBase
-                    from gmod_scene_importer.SourceIO_adv.library.source1.vmt import VMT
-                    from gmod_scene_importer.SourceIO_adv.library.utils.tiny_path import TinyPath
+                    from .sourceio_bridge import ShaderRegistry, ShaderBase, VMT, TinyPath
                     
                     ShaderBase.use_bvlg(context.scene.gmod_pull_material_mode == 'SOURCEIO')
                     
@@ -1864,10 +1739,7 @@ class ImportGModScene(bpy.types.Operator):
                     target_mat["gmod_path"] = material_override
                     
                     # Setup VMT loader to populate texture nodes
-                    from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.material_loader import ShaderRegistry
-                    from gmod_scene_importer.SourceIO_adv.blender_bindings.material_loader.shader_base import ShaderBase
-                    from gmod_scene_importer.SourceIO_adv.library.source1.vmt import VMT
-                    from gmod_scene_importer.SourceIO_adv.library.utils.tiny_path import TinyPath
+                    from .sourceio_bridge import ShaderRegistry, ShaderBase, VMT, TinyPath
                     
                     ShaderBase.use_bvlg(context.scene.gmod_pull_material_mode == 'SOURCEIO')
                     
@@ -2575,7 +2447,7 @@ class GModBrowseAndLoadMdl(bpy.types.Operator):
                 cache_p = os.path.join(bpy.utils.resource_path('USER'), "gmod_workshop_cache")
             merged = os.path.join(cache_p, "merged_content")
             if os.path.exists(merged):
-                from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
+                from .sourceio_bridge import LooseFilesContentProvider
                 cm.add_child(LooseFilesContentProvider(TinyPath(merged)))
                 print(f"[GModBrowse] Fallback: merged_content mounted: {merged}")
         
@@ -2693,7 +2565,7 @@ class GModRetryMissing(bpy.types.Operator):
                 cache_path_str = os.path.join(bpy.utils.resource_path('USER'), "gmod_workshop_cache")
             merged = os.path.join(cache_path_str, "merged_content")
             if os.path.exists(merged):
-                from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
+                from .sourceio_bridge import LooseFilesContentProvider
                 cm.add_child(LooseFilesContentProvider(TinyPath(merged)))
                 print(f"[GModRetry] Fallback: Mounted merged_content: {merged}")
             
@@ -3023,7 +2895,7 @@ class GModImportARC9RuntimeOperator(bpy.types.Operator):
                      break
              if addon_root and os.path.isdir(addon_root):
                  try:
-                     from gmod_scene_importer.SourceIO_adv.library.shared.content_manager.providers.loose_files import LooseFilesContentProvider
+                     from .sourceio_bridge import LooseFilesContentProvider
                      cm.add_child(LooseFilesContentProvider(TinyPath(addon_root)))
                  except Exception as _jit_e:
                      print(f"[GModImporter] JIT mount failed: {_jit_e}")
@@ -3219,7 +3091,7 @@ class GModImportARC9RuntimeOperator(bpy.types.Operator):
         context.scene.gmod_skip_materials = context.scene.gmod_weapon_skip_materials
         context.scene.gmod_pull_material_mode = context.scene.gmod_weapon_pull_material_mode
 
-        from gmod_scene_importer.SourceIO_adv.library.shared.content_manager import ContentManager
+        from .sourceio_bridge import ContentManager
         cm = ContentManager()
         cache_path_str = context.scene.gmod_weapon_cache_path
         if not cache_path_str:
@@ -3875,7 +3747,7 @@ class GModImportARC9RuntimeOperator(bpy.types.Operator):
         context.scene.gmod_skip_materials = context.scene.gmod_weapon_skip_materials
         context.scene.gmod_pull_material_mode = context.scene.gmod_weapon_pull_material_mode
 
-        from gmod_scene_importer.SourceIO_adv.library.shared.content_manager import ContentManager
+        from .sourceio_bridge import ContentManager
         cm = ContentManager()
         cache_path_str = context.scene.gmod_weapon_cache_path
         if not cache_path_str:
